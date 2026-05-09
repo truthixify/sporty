@@ -68,6 +68,7 @@ class Thresholds(BaseModel):
     sustain_frames_seconds: float = 300.0
     sustain_events_seconds: float = 1800.0
     stale_data_seconds: float = 600.0
+    alert_refire_seconds: float = 1800.0  # don't re-page same title within 30 min
 
 
 class Monitor(BaseModel):

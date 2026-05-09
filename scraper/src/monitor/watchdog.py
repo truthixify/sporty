@@ -44,22 +44,32 @@ async def run_watchdog(
     base = f"http://{cfg.api.host}:{cfg.api.port}"
     own_client = client is None
     http = client or httpx.AsyncClient(timeout=10.0)
-    last_alerts: dict[str, ThresholdAlert] = {}
     seen_sessions: set[str] = set()
     evaluator = ThresholdEvaluator(cfg.monitor.thresholds)
+    # Per-title state: when we first fired this alert and when we last fired
+    # it. Used to suppress same-title spam (the body changes every tick
+    # because it includes the elapsed seconds).
+    active: dict[str, dict[str, float]] = {}
+    refire_interval_s = cfg.monitor.thresholds.alert_refire_seconds
     ran = 0
 
     try:
         while iterations is None or ran < iterations:
             ran += 1
+            now = time.time()
             try:
                 r = await http.get(f"{base}/metrics/capture")
                 r.raise_for_status()
                 metrics = r.json()
             except Exception as exc:
                 log.warning("watchdog: metrics fetch failed: %s", exc)
-                await manager.send(
-                    "critical", "watchdog: metrics endpoint unreachable", str(exc)
+                await _maybe_send(
+                    manager, active, now, refire_interval_s,
+                    ThresholdAlert(
+                        severity="critical",
+                        title="watchdog: metrics endpoint unreachable",
+                        body=str(exc),
+                    ),
                 )
                 await asyncio.sleep(cfg.monitor.watchdog_interval_seconds)
                 continue
@@ -69,12 +79,16 @@ async def run_watchdog(
             alerts = list(evaluator.evaluate(metrics))
             alerts.extend(_db_alerts(session_factory, cfg, seen_sessions))
 
+            current_titles = {a.title for a in alerts}
             for alert in alerts:
-                key = alert.title
-                if last_alerts.get(key) == alert:
-                    continue
-                last_alerts[key] = alert
-                await manager.send(alert.severity, alert.title, alert.body)
+                await _maybe_send(manager, active, now, refire_interval_s, alert)
+
+            # Auto-clear titles whose conditions have resolved so the next
+            # breach fires immediately again rather than waiting on the
+            # cooldown.
+            for title in list(active):
+                if title not in current_titles:
+                    del active[title]
 
             if iterations is None or ran < iterations:
                 await asyncio.sleep(cfg.monitor.watchdog_interval_seconds)
@@ -82,6 +96,29 @@ async def run_watchdog(
         if own_client:
             await http.aclose()
     return ran
+
+
+async def _maybe_send(
+    manager: ChannelManager,
+    active: dict[str, dict[str, float]],
+    now: float,
+    refire_interval_s: float,
+    alert: ThresholdAlert,
+) -> None:
+    """Send the alert iff we haven't fired the same title in the last
+    `refire_interval_s` seconds. On re-fire, prefix the body with how long
+    it's been firing so the operator can see the trend without spam."""
+    state = active.get(alert.title)
+    if state is None:
+        active[alert.title] = {"first_ts": now, "last_ts": now}
+        await manager.send(alert.severity, alert.title, alert.body)
+        return
+    if now - state["last_ts"] < refire_interval_s:
+        return
+    state["last_ts"] = now
+    elapsed = now - state["first_ts"]
+    body = f"still firing after {int(elapsed)}s. {alert.body}"
+    await manager.send(alert.severity, alert.title, body)
 
 
 def _db_alerts(

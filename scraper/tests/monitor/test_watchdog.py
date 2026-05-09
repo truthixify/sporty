@@ -220,6 +220,93 @@ async def test_watchdog_alerts_on_stale_parser_watermark(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_watchdog_does_not_refire_same_title_within_cooldown() -> None:
+    from src.config import Config, Database, Monitor, Paths, Thresholds
+    from src.db import init_db, make_engine, make_session_factory
+
+    sent: list[tuple[str, str, str]] = []
+
+    class Recorder(ConsoleChannel):
+        name = "rec"
+
+        async def send(self, severity, title, body):
+            sent.append((severity, title, body))
+
+    cfg = Config(
+        monitor=Monitor(
+            watchdog_interval_seconds=0,
+            thresholds=Thresholds(
+                min_frames_per_min=10, min_events_per_hour=30,
+                sustain_frames_seconds=0, sustain_events_seconds=0,
+                stale_data_seconds=600,
+                alert_refire_seconds=1800,
+            ),
+        ),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "frames_per_min": 1.0, "events_per_hour": 1.0,
+            "last_event_age_s": 5.0, "last_event_ts": 1.0,
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        mgr = ChannelManager([_Bound(channel=Recorder(stream=io.StringIO()), severity_min="info")])
+        await run_watchdog(cfg, mgr, iterations=5, client=client)
+
+    # 2 unique titles ("low frame rate" + "low event rate"), each fired once
+    titles = [t for _, t, _ in sent]
+    assert titles.count("capture: low frame rate") == 1
+    assert titles.count("capture: low event rate") == 1
+
+
+@pytest.mark.asyncio
+async def test_watchdog_refires_after_resolution_and_re_breach() -> None:
+    from src.config import Config, Monitor, Thresholds
+
+    sent: list[str] = []
+
+    class Recorder(ConsoleChannel):
+        name = "rec"
+
+        async def send(self, severity, title, body):
+            sent.append(title)
+
+    cfg = Config(
+        monitor=Monitor(
+            watchdog_interval_seconds=0,
+            thresholds=Thresholds(
+                min_frames_per_min=10, min_events_per_hour=30,
+                sustain_frames_seconds=0, sustain_events_seconds=0,
+                stale_data_seconds=600,
+                alert_refire_seconds=1800,
+            ),
+        ),
+    )
+
+    # Iteration 1: bad. Iteration 2: good (clears). Iteration 3: bad again.
+    counter = {"i": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        counter["i"] += 1
+        if counter["i"] in (1, 3):
+            return httpx.Response(200, json={
+                "frames_per_min": 1.0, "events_per_hour": 100.0,
+                "last_event_age_s": 5.0, "last_event_ts": 1.0,
+            })
+        return httpx.Response(200, json={
+            "frames_per_min": 50.0, "events_per_hour": 100.0,
+            "last_event_age_s": 5.0, "last_event_ts": 1.0,
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        mgr = ChannelManager([_Bound(channel=Recorder(stream=io.StringIO()), severity_min="info")])
+        await run_watchdog(cfg, mgr, iterations=3, client=client)
+
+    assert sent.count("capture: low frame rate") == 2
+
+
+@pytest.mark.asyncio
 async def test_watchdog_alerts_when_metrics_endpoint_fails() -> None:
     sent: list[tuple[str, str, str]] = []
 
