@@ -6,6 +6,7 @@ from pathlib import Path
 from src.capture.browser import (
     cleanup_stale_chromium_lock,
     clear_chromium_crash_state,
+    kill_orphaned_chromium_for_profile,
 )
 from src.capture.recovery import RecoveryRateLimiter
 
@@ -117,3 +118,11 @@ def test_clear_crash_state_skips_corrupt_json(tmp_path: Path) -> None:
     (profile / "Default" / "Preferences").write_text("{not valid json")
     # Should not raise
     assert clear_chromium_crash_state(profile) is False
+
+
+def test_kill_orphaned_chromium_returns_zero_when_none(tmp_path: Path) -> None:
+    """The profile path is unique to this test, so no real chromium can
+    possibly be holding it. Should be a clean noop."""
+    profile = tmp_path / "definitely-not-used-by-chromium"
+    profile.mkdir()
+    assert kill_orphaned_chromium_for_profile(profile) == 0

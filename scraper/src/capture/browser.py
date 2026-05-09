@@ -25,11 +25,90 @@ _CHROMIUM_NAME_NEEDLES = ("chrome", "chromium")
 
 def prepare_profile_for_launch(profile_dir: Path) -> None:
     """Run all the pre-launch hygiene steps for a Chromium persistent
-    profile so a previous unclean exit doesn't manifest as either a
-    SingletonLock conflict or the 'Something went wrong when opening your
-    profile' dialog. Idempotent and safe to call before every launch."""
+    profile so a previous unclean exit doesn't block this one. In order:
+
+    1. Kill any orphaned Chromium subprocesses still attached to this
+       profile via `--user-data-dir`. These are the zombies that survive
+       when the parent (Playwright) crashes mid-launch.
+    2. Remove a stale `SingletonLock` if its PID is dead or non-Chromium.
+    3. Patch `Default/Preferences` so Chromium doesn't pop the
+       'Something went wrong when opening your profile' dialog.
+
+    Idempotent and safe to call before every launch.
+    """
+    kill_orphaned_chromium_for_profile(profile_dir)
     cleanup_stale_chromium_lock(profile_dir)
     clear_chromium_crash_state(profile_dir)
+
+
+def kill_orphaned_chromium_for_profile(profile_dir: Path) -> int:
+    """Kill any chromium processes whose `--user-data-dir` argument matches
+    `profile_dir`. These are usually leftovers from previous Playwright
+    runs that crashed before Chromium's process tree was torn down.
+
+    SIGTERM first, then SIGKILL after a brief grace period. Returns the
+    number of PIDs we tried to kill (whether they died or not).
+    """
+    import signal
+
+    try:
+        resolved = str(profile_dir.resolve())
+    except (OSError, RuntimeError):
+        resolved = str(profile_dir)
+    needle = f"--user-data-dir={resolved}"
+
+    pids = _pgrep(needle)
+    own_pid = os.getpid()
+    pids = [p for p in pids if p != own_pid]
+    if not pids:
+        return 0
+
+    sys.stderr.write(
+        f"capture: killing {len(pids)} orphaned chromium process(es) "
+        f"holding {profile_dir} ({sorted(pids)})\n"
+    )
+    sys.stderr.flush()
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    deadline = time.time() + 2.0
+    while time.time() < deadline and any(_pid_alive(p) for p in pids):
+        time.sleep(0.1)
+
+    for pid in pids:
+        if _pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
+    return len(pids)
+
+
+def _pgrep(needle: str) -> list[int]:
+    """Return PIDs of processes whose full command line contains `needle`."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", needle],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        return []
+    if result.returncode != 0:
+        return []
+    pids: list[int] = []
+    for line in result.stdout.strip().splitlines():
+        try:
+            pids.append(int(line.strip()))
+        except ValueError:
+            continue
+    return pids
 
 
 def cleanup_stale_chromium_lock(profile_dir: Path) -> bool:
