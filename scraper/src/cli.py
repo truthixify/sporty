@@ -139,13 +139,48 @@ def api(
 @app.command()
 def monitor() -> None:
     """Run the watchdog that polls metrics and fires alerts."""
-    _not_implemented("monitor")
+    import asyncio
+
+    from src.alerts import build_manager
+    from src.config import load_config, load_secrets
+    from src.monitor import run_watchdog
+
+    cfg = load_config()
+    secrets = load_secrets()
+    manager = build_manager(cfg.alerts, secrets)
+    if not manager.channels:
+        typer.echo("monitor: no alert channels enabled in config", err=True)
+        raise typer.Exit(code=2)
+    asyncio.run(run_watchdog(cfg, manager))
 
 
 @app.command()
 def status() -> None:
     """Print a one-shot summary of capture, parser, and DB health."""
-    _not_implemented("status")
+    import httpx
+
+    from src.config import load_config
+
+    cfg = load_config()
+    base = f"http://{cfg.api.host}:{cfg.api.port}"
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            metrics = client.get(f"{base}/metrics/capture").json()
+            stats = client.get(f"{base}/db/stats").json()
+    except Exception as exc:
+        typer.echo(f"status: api unreachable at {base}: {exc}", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(
+        f"capture: events_per_hour={metrics.get('events_per_hour')} "
+        f"frames_per_min={metrics.get('frames_per_min')} "
+        f"last_event_age_s={metrics.get('last_event_age_s')}"
+    )
+    counts = stats.get("row_counts", {})
+    typer.echo(
+        f"db: events={counts.get('events')} schemas={counts.get('schemas')} "
+        f"seasons={counts.get('seasons')} matchday_snapshots={counts.get('match_day_snapshots')} "
+        f"odds={counts.get('odds')} standings={counts.get('standings')}"
+    )
 
 
 @db_app.command("init")

@@ -25,7 +25,8 @@ def test_version_flag_prints_version() -> None:
     assert result.stdout.strip()
 
 
-def test_monitor_stub_exits_nonzero() -> None:
+def test_monitor_exits_when_no_channels_enabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["monitor"])
-    assert result.exit_code == 1
-    assert "not yet implemented" in result.stderr or "not yet implemented" in result.stdout
+    assert result.exit_code == 2
+    assert "no alert channels enabled" in (result.stderr + result.stdout)

@@ -36,10 +36,10 @@ def test_yaml_overrides_defaults(tmp_path: Path) -> None:
 def test_secrets_defaults_to_none(monkeypatch) -> None:
     for var in (
         "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "DISCORD_WEBHOOK_URL",
-        "SMTP_HOST", "SMTP_USER", "SMTP_PASS", "EMAIL_FROM", "EMAIL_TO",
-        "SLACK_WEBHOOK_URL",
+        "RESEND_API_KEY", "EMAIL_FROM", "EMAIL_TO", "SLACK_WEBHOOK_URL",
     ):
         monkeypatch.delenv(var, raising=False)
     secrets = Secrets(_env_file=None)
     assert secrets.telegram_bot_token is None
-    assert secrets.smtp_port == 587
+    assert secrets.resend_api_key is None
+    assert secrets.email_from is None

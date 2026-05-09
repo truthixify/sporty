@@ -99,10 +99,7 @@ class Secrets(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     discord_webhook_url: str | None = None
-    smtp_host: str | None = None
-    smtp_port: int = 587
-    smtp_user: str | None = None
-    smtp_pass: str | None = None
+    resend_api_key: str | None = None
     email_from: str | None = None
     email_to: str | None = None
     slack_webhook_url: str | None = None
