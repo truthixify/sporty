@@ -18,8 +18,15 @@ from src.db.models import (
 )
 from src.parse.journal import iter_frames
 from src.parse.pairing import Pairer, ResponsePair
-from src.parse.products import detect_for_event_block, detect_for_schema_template
-from src.parse.products.base import schema_rows_from_template
+from src.parse.products import (
+    all_products,
+    detect_for_event_block,
+    detect_for_schema_template,
+)
+from src.parse.schemas import schema_rows_from_template
+
+
+_PRODUCTS_BY_NAME = {p.name: p for p in all_products()}
 
 
 @dataclass
@@ -214,6 +221,14 @@ def _stage_event_blocks(pair: ResponsePair, buf: _Buffer, stats: IngestStats) ->
         if not isinstance(block, dict):
             continue
         product = detect_for_event_block(block)
+        if product is None:
+            # Result blocks (and metadata-only blocks) often have no
+            # `participants[*].classType` to dispatch on. Fall back to the
+            # product we already classified for this `playlistId` from an
+            # earlier /event/data or /playlists/ frame.
+            schema_id = block.get("playlistId")
+            if isinstance(schema_id, int) and schema_id in buf.schemas:
+                product = _PRODUCTS_BY_NAME.get(buf.schemas[schema_id].product)
         if product is None:
             stats.unknown_blocks += 1
             continue

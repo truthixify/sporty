@@ -4,9 +4,13 @@ import asyncio
 import json
 import sys
 import time
-from pathlib import Path
-from typing import Any
 
+from src.capture.browser import (
+    discover_iframe_url,
+    reload_iframe,
+    reload_parent,
+    renavigate_parent,
+)
 from src.capture.filters import should_keep_payload
 from src.capture.health import HealthMonitor
 from src.capture.journal import JournalWriter, new_session_id
@@ -30,12 +34,7 @@ async def run_capture(
     """Run the capture daemon until `duration_s` (0 means forever) or the
     recovery ladder gives up. Returns one of the EXIT_* codes."""
     try:
-        from playwright.async_api import (
-            BrowserContext,
-            Page,
-            WebSocket,
-            async_playwright,
-        )
+        from playwright.async_api import async_playwright
     except ImportError as exc:
         print(f"capture: playwright not installed: {exc}", file=sys.stderr)
         return EXIT_UNKNOWN
@@ -51,7 +50,10 @@ async def run_capture(
     headless_eff = cfg.capture.headless if headless is None else headless
     parent_url = cfg.capture.parent_url
 
-    def on_ws(ws: "WebSocket") -> None:
+    started_ts = time.time()
+    frames_in = frames_out = error_count = 0
+
+    def on_ws(ws) -> None:
         if "virtustec" not in ws.url:
             return
         writer.lifecycle("open", url=ws.url)
@@ -59,25 +61,31 @@ async def run_capture(
 
         def make_handler(direction: str):
             def handler(payload: str) -> None:
+                nonlocal frames_in, frames_out
                 if not isinstance(payload, str):
                     return
                 if not should_keep_payload(payload, cfg.capture.ignore_resources):
                     return
                 writer.frame(direction, payload)
                 if direction == "in":
+                    frames_in += 1
                     status = _extract_status(payload)
                     if status is not None:
                         health.record(time.time(), status)
+                else:
+                    frames_out += 1
             return handler
 
         ws.on("framesent", make_handler("out"))
         ws.on("framereceived", make_handler("in"))
 
-    async def attach_to_page(page: "Page") -> None:
+    async def attach_to_page(page) -> None:
         page.on("websocket", on_ws)
 
+    end_reason = "ok"
+    exit_code = EXIT_CLEAN
     async with async_playwright() as p:
-        ctx: "BrowserContext" = await p.chromium.launch_persistent_context(
+        ctx = await p.chromium.launch_persistent_context(
             user_data_dir=str(cfg.paths.profile_dir),
             headless=headless_eff,
             viewport={"width": 1280, "height": 800},
@@ -94,56 +102,98 @@ async def run_capture(
                 await page.goto(parent_url, wait_until="domcontentloaded", timeout=60_000)
             except Exception as exc:
                 print(f"capture: parent goto failed: {exc}", file=sys.stderr)
-                return EXIT_UNKNOWN
+                end_reason = "parent_goto_failed"
+                exit_code = EXIT_UNKNOWN
+                return exit_code
 
-            iframe_url = await _discover_iframe_url(page, timeout_s=300.0, writer=writer)
+            iframe_url = await discover_iframe_url(page, timeout_s=300.0)
             if iframe_url is None:
                 print("capture: no virtustec iframe after 5min", file=sys.stderr)
-                return EXIT_NO_IFRAME
+                end_reason = "no_iframe"
+                exit_code = EXIT_NO_IFRAME
+                return exit_code
+            writer.lifecycle("iframe_url", url=iframe_url)
 
             start = time.time()
             while True:
                 await asyncio.sleep(2)
                 if duration_s > 0 and time.time() - start >= duration_s:
-                    return EXIT_CLEAN
+                    end_reason = "duration_reached"
+                    exit_code = EXIT_CLEAN
+                    return exit_code
                 if not health.is_dead():
                     continue
                 now = time.time()
                 if limiter.too_many(now):
                     print("capture: too many recoveries this hour", file=sys.stderr)
-                    return EXIT_TOO_MANY_RECOVERIES
+                    end_reason = "too_many_recoveries"
+                    exit_code = EXIT_TOO_MANY_RECOVERIES
+                    return exit_code
                 limiter.record_attempt(now)
+                error_count += 1
                 ok = await _run_recovery_ladder(page, writer, health, parent_url=parent_url)
                 if not ok:
                     print("capture: recovery ladder exhausted", file=sys.stderr)
-                    return EXIT_SESSION_DEAD
+                    end_reason = "recovery_exhausted"
+                    exit_code = EXIT_SESSION_DEAD
+                    return exit_code
         except KeyboardInterrupt:
-            return EXIT_CLEAN
+            end_reason = "sigint"
+            exit_code = EXIT_CLEAN
+            return exit_code
         except Exception as exc:
             print(f"capture: uncaught {type(exc).__name__}: {exc}", file=sys.stderr)
-            return EXIT_UNKNOWN
+            end_reason = f"uncaught:{type(exc).__name__}"
+            exit_code = EXIT_UNKNOWN
+            return exit_code
         finally:
             try:
                 await ctx.close()
             finally:
                 writer.close()
+                _record_session(
+                    cfg,
+                    session_id=session_id,
+                    started_ts=started_ts,
+                    end_reason=end_reason,
+                    frames_in=frames_in,
+                    frames_out=frames_out,
+                    error_count=error_count,
+                )
 
 
-async def _discover_iframe_url(page, *, timeout_s: float, writer: JournalWriter) -> str | None:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            url = await page.evaluate(
-                "() => { const ifr = Array.from(document.querySelectorAll('iframe'))"
-                ".find(f => (f.src||'').includes('virtustec')); return ifr ? ifr.src : null; }"
-            )
-        except Exception:
-            url = None
-        if url:
-            writer.lifecycle("iframe_url", url=url)
-            return url
-        await asyncio.sleep(0.5)
-    return None
+def _record_session(
+    cfg: Config,
+    *,
+    session_id: str,
+    started_ts: float,
+    end_reason: str,
+    frames_in: int,
+    frames_out: int,
+    error_count: int,
+) -> None:
+    """Best-effort write of a CaptureSession row at daemon shutdown so the API
+    can report on past sessions. Failures here are logged and swallowed; we
+    never want a DB write to mask the real exit code."""
+    try:
+        from src.db import make_engine, make_session_factory
+        from src.db.models import CaptureSession
+
+        engine = make_engine(cfg)
+        Session = make_session_factory(engine)
+        with Session() as session:
+            session.merge(CaptureSession(
+                session_id=session_id,
+                started_ts=started_ts,
+                ended_ts=time.time(),
+                end_reason=end_reason,
+                frames_in=frames_in,
+                frames_out=frames_out,
+                error_count=error_count,
+            ))
+            session.commit()
+    except Exception as exc:
+        print(f"capture: failed to record session row: {exc}", file=sys.stderr)
 
 
 async def _run_recovery_ladder(page, writer, health: HealthMonitor, *, parent_url: str) -> bool:
@@ -160,16 +210,17 @@ async def _try_recovery(page, writer, health: HealthMonitor, *, level: int, pare
     health.reset()
     try:
         if level == 1:
-            await page.evaluate(
-                "() => { const f = document.querySelector('iframe[src*=\"virtustec\"]');"
-                " if (f) { f.src = f.src; } }"
-            )
+            await reload_iframe(page)
         elif level == 2:
-            await page.reload(wait_until="domcontentloaded", timeout=60_000)
-            await _discover_iframe_url(page, timeout_s=15.0, writer=writer)
+            await reload_parent(page)
+            url = await discover_iframe_url(page, timeout_s=15.0)
+            if url:
+                writer.lifecycle("iframe_url", url=url)
         elif level == 3:
-            await page.goto(parent_url, wait_until="domcontentloaded", timeout=60_000)
-            await _discover_iframe_url(page, timeout_s=15.0, writer=writer)
+            await renavigate_parent(page, parent_url)
+            url = await discover_iframe_url(page, timeout_s=15.0)
+            if url:
+                writer.lifecycle("iframe_url", url=url)
     except Exception:
         return False
     return await _wait_until_healthy(health, timeout_s=health.healthy_after_seconds + 5.0)

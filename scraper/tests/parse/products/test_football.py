@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from src.parse.products.base import schema_rows_from_template
 from src.parse.products.football import FootballProduct
+from src.parse.schemas import schema_rows_from_template
 
 
 FB_SCHEMA_TPL = {

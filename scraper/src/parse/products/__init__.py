@@ -6,20 +6,22 @@ from src.parse.products.base import Product
 from src.parse.products.dogs import DogsProduct
 from src.parse.products.football import FootballProduct
 from src.parse.products.horses import HorsesProduct
+from src.parse.products.mma import MmaProduct
 from src.parse.products.motorbikes import MotorbikesProduct
-from src.parse.products.race_base import RaceProduct
+from src.parse.products.races import RaceProduct
 from src.parse.products.speedway import SpeedwayProduct
 
 
 # FootballProduct first because its event_participant class types are
-# disjoint from races. Race products are listed in stable order; per-event
-# dispatch is unambiguous because each race's participantClassType is unique.
+# disjoint from races. Race-style products are listed in stable order; per-event
+# dispatch is unambiguous because each one's participantClassType is unique.
 _REGISTRY: list[Product] = [
     FootballProduct(),
     DogsProduct(),
     HorsesProduct(),
     SpeedwayProduct(),
     MotorbikesProduct(),
+    MmaProduct(),
 ]
 
 
@@ -45,6 +47,7 @@ __all__ = [
     "DogsProduct",
     "FootballProduct",
     "HorsesProduct",
+    "MmaProduct",
     "MotorbikesProduct",
     "Product",
     "RaceProduct",

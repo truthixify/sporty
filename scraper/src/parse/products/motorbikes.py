@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.parse.products.race_base import RaceProduct
+from src.parse.products.races import RaceProduct
 
 
 class MotorbikesProduct(RaceProduct):
