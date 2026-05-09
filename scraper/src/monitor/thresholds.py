@@ -40,7 +40,11 @@ class ThresholdEvaluator:
                     title="capture: low frame rate",
                     body=(
                         f"frames_per_min={fpm:.1f} below threshold "
-                        f"{self._thresholds.min_frames_per_min} for {int(elapsed)}s"
+                        f"{self._thresholds.min_frames_per_min} for {int(elapsed)}s. "
+                        f"WS is connected but barely flowing. Most likely the iframe "
+                        f"never reached the virtuals page (login expired, or the "
+                        f"browser landed on a non-virtuals page). Check journalctl "
+                        f"-u scraper-capture and consider re-running bootstrap_login.py."
                     ),
                 ),
                 out=alerts,
@@ -58,7 +62,9 @@ class ThresholdEvaluator:
                     title="capture: low event rate",
                     body=(
                         f"events_per_hour={eph:.1f} below threshold "
-                        f"{self._thresholds.min_events_per_hour} for {int(elapsed)}s"
+                        f"{self._thresholds.min_events_per_hour} for {int(elapsed)}s. "
+                        f"Frames are flowing but few are /event/data. Either an "
+                        f"off-peak hour, or the parser stopped advancing watermarks."
                     ),
                 ),
                 out=alerts,
@@ -69,7 +75,12 @@ class ThresholdEvaluator:
             alerts.append(ThresholdAlert(
                 severity="critical",
                 title="capture: stale data",
-                body=f"no event captured in {int(age)}s",
+                body=(
+                    f"no event captured in {int(age)}s. "
+                    f"Either capture has stopped writing the journal, or the "
+                    f"parser has stopped draining it. Check `scraper status` and "
+                    f"that both processes are running."
+                ),
             ))
 
         return alerts

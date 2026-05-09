@@ -146,13 +146,14 @@ def _db_alerts(
                 if s.session_id in seen_sessions:
                     continue
                 seen_sessions.add(s.session_id)
+                hint = _end_reason_hint(s.end_reason)
                 out.append(ThresholdAlert(
                     severity="critical",
                     title=f"capture: session ended ({s.end_reason})",
                     body=(
                         f"session_id={s.session_id} "
                         f"frames_in={s.frames_in} frames_out={s.frames_out} "
-                        f"errors={s.error_count}"
+                        f"errors={s.error_count}. {hint}"
                     ),
                 ))
 
@@ -163,11 +164,29 @@ def _db_alerts(
                     out.append(ThresholdAlert(
                         severity="warning",
                         title="parse: watermark stale",
-                        body=f"no parser run in {int(age)}s",
+                        body=(
+                            f"no parser run in {int(age)}s. "
+                            f"The systemd timer or `scraper dev`'s parse loop "
+                            f"is not advancing watermarks. Check the parser "
+                            f"process and run `scraper parse` by hand."
+                        ),
                     ))
     except Exception as exc:
         log.warning("watchdog: db_alerts query failed: %s", exc)
     return out
+
+
+def _end_reason_hint(reason: str | None) -> str:
+    if reason == "recovery_exhausted":
+        return ("Daemon exhausted its L1/L2/L3 recovery ladder. Session is dead; "
+                "the wrapper script will restart it after 30s.")
+    if reason == "no_iframe":
+        return ("Daemon never found a virtustec iframe. Login probably expired or "
+                "the page layout changed. Re-run scripts/bootstrap_login.py.")
+    if reason == "too_many_recoveries":
+        return ("Daemon hit the 6-recoveries-per-hour budget. Something upstream "
+                "is broken (Cloudflare, account, region). Wrapper will back off 30 min.")
+    return ""
 
 
 def _record_snapshot(
