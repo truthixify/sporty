@@ -9,17 +9,34 @@ from src.api.deps import ConfigDep, SessionDep
 from src.db.models import Event
 
 
-router = APIRouter()
+router = APIRouter(tags=["Health"])
 
 
-@router.get("/health")
+@router.get(
+    "/health",
+    summary="Liveness probe",
+    description=(
+        "Returns 200 with `{\"status\": \"ok\"}` as long as the API process "
+        "is responsive. Does not touch the database. Suitable for Kubernetes "
+        "liveness checks or a basic uptime monitor."
+    ),
+)
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.get("/ready")
+@router.get(
+    "/ready",
+    summary="Readiness probe",
+    description=(
+        "Returns 200 if the database is reachable AND we've seen at least one "
+        "event in the last hour. The `ok` flag in the body tells you whether "
+        "we'd consider the system warm; 503 means the DB itself failed. "
+        "`last_event_age_s` is the age of the freshest event in seconds."
+    ),
+    responses={503: {"description": "Database unreachable."}},
+)
 def ready(session: SessionDep, cfg: ConfigDep) -> dict:
-    """Readiness: DB reachable AND we've captured an event in the last hour."""
     try:
         last_ts = session.scalar(select(func.max(Event.captured_ts)))
     except Exception as exc:

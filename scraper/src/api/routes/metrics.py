@@ -7,13 +7,20 @@ from fastapi import APIRouter
 from sqlalchemy import func, select
 
 from src.api.deps import ConfigDep, SessionDep
-from src.db.models import CaptureSession, Event, ParseWatermark
+from src.db.models import Event, ParseWatermark
 
 
-router = APIRouter()
+router = APIRouter(tags=["Health"])
 
 
-@router.get("/metrics")
+@router.get(
+    "/metrics",
+    summary="All metrics in one payload",
+    description=(
+        "Returns capture and parser metrics together. Convenience wrapper "
+        "around `/metrics/capture` + `/metrics/parse`."
+    ),
+)
 def metrics(session: SessionDep, cfg: ConfigDep) -> dict:
     return {
         "capture": _capture_metrics(session, cfg),
@@ -21,12 +28,31 @@ def metrics(session: SessionDep, cfg: ConfigDep) -> dict:
     }
 
 
-@router.get("/metrics/capture")
+@router.get(
+    "/metrics/capture",
+    summary="Capture rate metrics",
+    description=(
+        "Capture-side rates the watchdog uses to decide when to alert: "
+        "`events_per_hour` (DB-derived) and `frames_per_min` (sampled from "
+        "the latest journal file's tail). `last_event_age_s` tells you how "
+        "long since the freshest event landed; sustained age over the "
+        "`stale_data_seconds` threshold fires a critical alert."
+    ),
+)
 def metrics_capture(session: SessionDep, cfg: ConfigDep) -> dict:
     return _capture_metrics(session, cfg)
 
 
-@router.get("/metrics/parse")
+@router.get(
+    "/metrics/parse",
+    summary="Parser watermark snapshot",
+    description=(
+        "One row per journal file the parser has seen. `last_offset` is the "
+        "byte offset where the next incremental parse will resume; "
+        "`parsed_count` is the number of lines processed in the most recent "
+        "run. `last_run_ts` is the unix timestamp of the last parse."
+    ),
+)
 def metrics_parse(session: SessionDep) -> dict:
     return _parse_metrics(session)
 

@@ -92,12 +92,54 @@ def test_events_recent_and_detail(app_client) -> None:
     client, _ = app_client
     r = client.get("/events/recent")
     assert r.status_code == 200 and r.json()["count"] == 1
+    payload = r.json()["events"][0]
+    # Football summary should expose football fields and server_status
+    assert payload["product"] == "football"
+    assert payload["server_status"] == "FINISHED"
+    assert payload["home_score"] == 2
+    assert payload["away_score"] == 1
+    assert "winner_id" not in payload
+    assert "num_runners" not in payload
+
     r = client.get("/events/1")
     assert r.status_code == 200
     body = r.json()
     assert body["e_block_id"] == 1
     assert body["home_score"] == 2
     assert any(s["team_id"] == "A" for s in body["standings"])
+
+
+def test_events_recent_race_summary_excludes_football_fields(tmp_path, app_client) -> None:
+    from sqlalchemy import select
+
+    from src.api import deps
+    from src.db.models import Event, Schema
+
+    client, _ = app_client
+    # Add a race event into the same DB the app is bound to
+    factory = deps._factory
+    assert factory is not None
+    with factory() as s:
+        s.add(Schema(schema_id=20100, product="dogs", kind="unknown",
+                     first_seen_ts=0, last_seen_ts=0))
+        s.add(Event(
+            e_block_id=999, schema_id=20100, product="dogs",
+            server_status="FINISHED",
+            event_time="2026-05-09T20:00:00Z",
+            captured_ts=__import__("time").time() + 1,
+            num_runners=6, winner_id="d3", second_id="d1",
+        ))
+        s.commit()
+
+    r = client.get("/events?product=dogs")
+    assert r.status_code == 200
+    rows = r.json()["events"]
+    assert any(e["e_block_id"] == 999 for e in rows)
+    race = next(e for e in rows if e["e_block_id"] == 999)
+    assert race["winner_id"] == "d3"
+    assert race["num_runners"] == 6
+    assert "home_score" not in race
+    assert "match_day" not in race
 
 
 def test_event_not_found(app_client) -> None:

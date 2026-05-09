@@ -23,7 +23,7 @@ from src.db.models import (
 )
 
 
-router = APIRouter()
+router = APIRouter(tags=["Database"])
 
 
 _TABLES = [
@@ -33,7 +33,15 @@ _TABLES = [
 ]
 
 
-@router.get("/db/stats")
+@router.get(
+    "/db/stats",
+    summary="Row count per table",
+    description=(
+        "Returns `COUNT(*)` for every application table. Skips the "
+        "`alembic_version` table because that one's noise. Useful as a "
+        "smoke test after a backfill or migration."
+    ),
+)
 def db_stats(session: SessionDep) -> dict:
     rows = {}
     for model in _TABLES:
