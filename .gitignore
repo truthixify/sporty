@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.eggs/
+*.egg-info/
+*.egg
+
+# uv
+.uv-cache/
+
+# Tests / type checkers / linters
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Secrets and runtime data
+.env
+.env.local
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+browser_profile/
+data/
+logs/
+exports/
+parsed/
+
+# Legacy prototype (local reference only, not for GitHub)
+vs_scraper/
