@@ -25,7 +25,7 @@ def test_version_flag_prints_version() -> None:
     assert result.stdout.strip()
 
 
-def test_capture_stub_exits_nonzero() -> None:
-    result = runner.invoke(app, ["capture"])
+def test_monitor_stub_exits_nonzero() -> None:
+    result = runner.invoke(app, ["monitor"])
     assert result.exit_code == 1
     assert "not yet implemented" in result.stderr or "not yet implemented" in result.stdout

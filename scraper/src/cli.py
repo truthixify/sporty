@@ -46,12 +46,19 @@ def capture(
     duration: int = typer.Option(
         0, "--duration", help="Run for N seconds then exit (0 = run forever)."
     ),
-    headless: bool = typer.Option(
-        False, "--headless/--headed", help="Run the browser headless."
+    headless: Optional[bool] = typer.Option(
+        None, "--headless/--headed", help="Override the configured headless mode."
     ),
 ) -> None:
     """Run the WebSocket capture daemon."""
-    _not_implemented("capture")
+    import asyncio
+
+    from src.capture import run_capture
+    from src.config import load_config
+
+    cfg = load_config()
+    code = asyncio.run(run_capture(cfg, duration_s=duration, headless=headless))
+    raise typer.Exit(code=code)
 
 
 @app.command()
