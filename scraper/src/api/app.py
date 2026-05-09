@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from src.api import deps
-from src.api.routes import db, events, football, health, metrics, sessions
+from src.api.routes import db, events, football, health, metrics, races, sessions
 from src.config import Config, load_config
 
 
@@ -47,8 +47,7 @@ _OPENAPI_TAGS = [
         "name": "Sessions",
         "description": (
             "Capture-daemon session history. Each row records when a daemon "
-            "started, why it stopped, and how many frames it ingested. The "
-            "watchdog reads this to detect recovery-ladder failures."
+            "started, why it stopped, and how many frames it ingested."
         ),
     },
     {
@@ -68,6 +67,40 @@ _OPENAPI_TAGS = [
         "description": (
             "Football-specific structured queries: schemas, seasons, the "
             "denormalized matchday view, point-in-time standings."
+        ),
+    },
+    {
+        "name": "Dogs",
+        "description": (
+            "Greyhound racing. List schemas (race series), inspect events, "
+            "trap-position bias, top winning dogs."
+        ),
+    },
+    {
+        "name": "Horses",
+        "description": (
+            "Horse racing. Same shape as the other race products — schemas, "
+            "events, post-position bias, top winning horses."
+        ),
+    },
+    {
+        "name": "Speedway",
+        "description": (
+            "Speedway. Schemas, events, grid-position bias, top winners."
+        ),
+    },
+    {
+        "name": "Motorbikes",
+        "description": (
+            "Motorbike racing. Schemas, events, grid-position bias, top "
+            "winning riders."
+        ),
+    },
+    {
+        "name": "MMA",
+        "description": (
+            "Mixed martial arts. Two-fighter events with a winner_id. "
+            "`winners-by-trap` here is just `corner 1 vs corner 2`."
         ),
     },
 ]
@@ -91,4 +124,9 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.include_router(db.router)
     app.include_router(events.router)
     app.include_router(football.router)
+    app.include_router(races.make_race_router(product="dogs", tag="Dogs", label="dog racing"))
+    app.include_router(races.make_race_router(product="horses", tag="Horses", label="horse racing"))
+    app.include_router(races.make_race_router(product="speedway", tag="Speedway", label="speedway"))
+    app.include_router(races.make_race_router(product="motorbikes", tag="Motorbikes", label="motorbike racing"))
+    app.include_router(races.make_race_router(product="mma", tag="MMA", label="MMA"))
     return app
