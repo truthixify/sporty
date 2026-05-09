@@ -39,8 +39,8 @@ class ThresholdEvaluator:
                     severity="warning",
                     title="capture: low frame rate",
                     body=(
-                        f"frames_per_min={fpm:.1f} below threshold "
-                        f"{self._thresholds.min_frames_per_min} for {int(elapsed)}s. "
+                        f"frames_per_min={fpm:.2f} below threshold "
+                        f"{self._thresholds.min_frames_per_min:.2f} for {int(elapsed)}s. "
                         f"WS is connected but barely flowing. Most likely the iframe "
                         f"never reached the virtuals page (login expired, or the "
                         f"browser landed on a non-virtuals page). Check journalctl "
@@ -61,8 +61,8 @@ class ThresholdEvaluator:
                     severity="warning",
                     title="capture: low event rate",
                     body=(
-                        f"events_per_hour={eph:.1f} below threshold "
-                        f"{self._thresholds.min_events_per_hour} for {int(elapsed)}s. "
+                        f"events_per_hour={eph:.2f} below threshold "
+                        f"{self._thresholds.min_events_per_hour:.2f} for {int(elapsed)}s. "
                         f"Frames are flowing but few are /event/data. Either an "
                         f"off-peak hour, or the parser stopped advancing watermarks."
                     ),
@@ -113,7 +113,7 @@ def evaluate(metrics: dict, thresholds: Thresholds) -> list[ThresholdAlert]:
         alerts.append(ThresholdAlert(
             severity="warning",
             title="capture: low frame rate",
-            body=f"frames_per_min={fpm:.1f} < threshold={thresholds.min_frames_per_min}",
+            body=f"frames_per_min={fpm:.2f} < threshold={thresholds.min_frames_per_min:.2f}",
         ))
 
     eph = metrics.get("events_per_hour")
@@ -121,7 +121,7 @@ def evaluate(metrics: dict, thresholds: Thresholds) -> list[ThresholdAlert]:
         alerts.append(ThresholdAlert(
             severity="warning",
             title="capture: low event rate",
-            body=f"events_per_hour={eph:.1f} < threshold={thresholds.min_events_per_hour}",
+            body=f"events_per_hour={eph:.2f} < threshold={thresholds.min_events_per_hour:.2f}",
         ))
 
     age = metrics.get("last_event_age_s")

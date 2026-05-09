@@ -92,9 +92,10 @@ async def run_watchdog(
                     "scraper: monitoring started",
                     (
                         f"watchdog is up. polling every {cfg.monitor.watchdog_interval_seconds}s. "
-                        f"current state: events_per_hour={metrics.get('events_per_hour')}, "
-                        f"frames_per_min={metrics.get('frames_per_min')}, "
-                        f"last_event_age_s={metrics.get('last_event_age_s')}. "
+                        f"current state: "
+                        f"events_per_hour={_fmt(metrics.get('events_per_hour'))}, "
+                        f"frames_per_min={_fmt(metrics.get('frames_per_min'))}, "
+                        f"last_event_age_s={_fmt(metrics.get('last_event_age_s'))}. "
                         f"{hb_note}"
                     ),
                 )
@@ -153,20 +154,25 @@ async def _send_heartbeat(
         except Exception as exc:
             log.warning("heartbeat: db count query failed: %s", exc)
 
-    fpm = metrics.get("frames_per_min")
-    eph = metrics.get("events_per_hour")
-    age = metrics.get("last_event_age_s")
     body = (
-        f"events_per_hour={eph} frames_per_min={fpm:.1f if isinstance(fpm,(int,float)) else fpm} "
-        f"last_event_age_s={age}{counts}"
-    )
-    # Prefer formatting safely without nested f-string conditionals
-    fpm_s = f"{fpm:.1f}" if isinstance(fpm, (int, float)) else str(fpm)
-    body = (
-        f"events_per_hour={eph} frames_per_min={fpm_s} "
-        f"last_event_age_s={age}{counts}"
+        f"events_per_hour={_fmt(metrics.get('events_per_hour'))} "
+        f"frames_per_min={_fmt(metrics.get('frames_per_min'))} "
+        f"last_event_age_s={_fmt(metrics.get('last_event_age_s'))}{counts}"
     )
     await manager.send("info", "scraper: heartbeat", body)
+
+
+def _fmt(value, dp: int = 2) -> str:
+    """Format a metric value for human-readable alert bodies. Returns 'n/a'
+    when the metric is missing, otherwise formats numbers with `dp` decimal
+    places."""
+    if value is None:
+        return "n/a"
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        return f"{value:.{dp}f}"
+    return str(value)
 
 
 async def _maybe_send(
