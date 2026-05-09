@@ -589,7 +589,7 @@ This describes the **`scraper/`** directory, which sits as a sibling to the exis
 scraper/
   README.md
   SPEC.md
-  RUNBOOK.md
+  runbook.md
   pyproject.toml
   uv.lock
   .python-version
@@ -698,8 +698,8 @@ scraper/
     test_api_routes.py
 
   docs/
-    PROTOCOL.md
-    DATABASE.md                      # ER diagram + season/matchday query examples
+    protocol.md
+    database.md                      # ER diagram + season/matchday query examples
 ```
 
 ## Configuration

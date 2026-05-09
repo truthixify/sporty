@@ -13,7 +13,7 @@ capture daemon writes to the journal and what the parser decodes.
   (football, dogs, horses, speedway, motorbikes, ...) regardless of which
   league is on screen.
 - Session lifetime is roughly 20 minutes. After that every call returns 401
-  and the iframe needs to reload (see RUNBOOK.md "recovery ladder").
+  and the iframe needs to reload (see `runbook.md` "recovery ladder").
 
 ## Frame envelope
 
