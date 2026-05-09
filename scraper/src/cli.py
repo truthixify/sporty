@@ -182,6 +182,145 @@ def status() -> None:
     )
 
 
+@app.command()
+def diagnose() -> None:
+    """Inspect every part of the local stack and explain what's wrong.
+
+    Use this when you see a low-frame-rate or stale-data alert and want to
+    know which piece of the pipeline is broken without poking at SQLite or
+    the journal by hand.
+    """
+    import json
+    import subprocess
+    import time
+    from collections import Counter
+
+    from src.config import load_config
+
+    cfg = load_config()
+
+    def head(text: str) -> None:
+        typer.echo(f"\n=== {text} ===")
+
+    head("config")
+    typer.echo(f"data_dir:     {cfg.paths.data_dir}")
+    typer.echo(f"captures_dir: {cfg.paths.captures_dir}")
+    typer.echo(f"profile_dir:  {cfg.paths.profile_dir}")
+    typer.echo(f"database:     {cfg.database.url}")
+
+    head("chromium processes")
+    try:
+        result = subprocess.run(
+            ["pgrep", "-fl", "Chrome for Testing"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.strip().splitlines():
+                typer.echo(f"  {line}")
+        else:
+            typer.echo("  none running")
+    except Exception as exc:
+        typer.echo(f"  could not check: {exc}")
+
+    head("journal files")
+    captures = sorted(cfg.paths.captures_dir.glob("vs_*.jsonl")) if cfg.paths.captures_dir.exists() else []
+    if not captures:
+        typer.echo(f"  no journal files in {cfg.paths.captures_dir}")
+        typer.echo("  → capture daemon hasn't written anything; check it's running")
+    for jf in captures[-3:]:
+        st = jf.stat()
+        age = time.time() - st.st_mtime
+        typer.echo(f"  {jf.name}  size={st.st_size:>10}  modified {int(age)}s ago")
+
+    head("recent journal contents")
+    if captures:
+        latest = captures[-1]
+        kind_counts: Counter = Counter()
+        resource_counts: Counter = Counter()
+        try:
+            with latest.open("rb") as f:
+                f.seek(max(0, latest.stat().st_size - 200_000))
+                tail = f.read().decode("utf-8", errors="replace")
+            for line in tail.splitlines():
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                kind = rec.get("kind") or rec.get("dir")
+                kind_counts[kind] += 1
+                data = rec.get("data")
+                if isinstance(data, str):
+                    try:
+                        d = json.loads(data)
+                        req = d.get("req") or {}
+                        if req.get("resource"):
+                            resource_counts[req["resource"]] += 1
+                    except Exception:
+                        pass
+        except Exception as exc:
+            typer.echo(f"  could not read tail: {exc}")
+        typer.echo(f"  tail kinds: {dict(kind_counts)}")
+        for res, n in resource_counts.most_common(8):
+            typer.echo(f"    {n:>5}  {res}")
+        if not any("/eventBlocks/event/data" in r for r in resource_counts):
+            typer.echo(
+                "  → no /eventBlocks/event/data in recent journal. "
+                "Iframe is connected but not on the virtuals page. "
+                "Re-run bootstrap_login.py and click into a sport."
+            )
+
+    head("database")
+    try:
+        from sqlalchemy import func, select
+
+        from src.db import make_engine, make_session_factory
+        from src.db.models import (
+            CaptureSession, Event, ParseWatermark, Schema,
+        )
+
+        engine = make_engine(cfg)
+        Session = make_session_factory(engine)
+        with Session() as s:
+            ev_count = s.scalar(select(func.count()).select_from(Event)) or 0
+            sc_count = s.scalar(select(func.count()).select_from(Schema)) or 0
+            last_ts = s.scalar(select(func.max(Event.captured_ts)))
+            typer.echo(f"  events:  {ev_count}")
+            typer.echo(f"  schemas: {sc_count}")
+            if last_ts is not None:
+                age = time.time() - float(last_ts)
+                typer.echo(f"  freshest event captured {int(age)}s ago")
+            else:
+                typer.echo("  no events yet")
+            head("parser watermarks")
+            wms = s.scalars(select(ParseWatermark).order_by(ParseWatermark.last_run_ts.desc())).all()
+            if not wms:
+                typer.echo("  no watermarks; parser hasn't run yet")
+            for wm in wms[:5]:
+                age = time.time() - wm.last_run_ts
+                typer.echo(
+                    f"  {wm.journal_file}  offset={wm.last_offset:>10}  "
+                    f"last_run {int(age)}s ago  parsed={wm.parsed_count}"
+                )
+            head("recent capture sessions")
+            sess = s.scalars(
+                select(CaptureSession).order_by(CaptureSession.started_ts.desc()).limit(5)
+            ).all()
+            if not sess:
+                typer.echo("  no capture sessions recorded; daemon may not have shut down cleanly yet")
+            for x in sess:
+                start_age = time.time() - x.started_ts
+                end = (
+                    f"ended {int(time.time() - x.ended_ts)}s ago: {x.end_reason}"
+                    if x.ended_ts else "still running"
+                )
+                typer.echo(
+                    f"  {x.session_id[:8]}...  started {int(start_age)}s ago  "
+                    f"frames_in={x.frames_in} {end}"
+                )
+    except Exception as exc:
+        typer.echo(f"  could not query db: {exc}")
+
+
 @db_app.command("init")
 def db_init() -> None:
     """Create the database file and apply all migrations."""

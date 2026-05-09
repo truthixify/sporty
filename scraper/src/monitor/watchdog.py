@@ -83,12 +83,18 @@ async def run_watchdog(
             for alert in alerts:
                 await _maybe_send(manager, active, now, refire_interval_s, alert)
 
-            # Auto-clear titles whose conditions have resolved so the next
-            # breach fires immediately again rather than waiting on the
-            # cooldown.
+            # Auto-clear titles whose conditions have resolved AND fire a
+            # positive "resolved" alert so the operator knows the system
+            # came back without having to hand-poll.
             for title in list(active):
                 if title not in current_titles:
-                    del active[title]
+                    state = active.pop(title)
+                    duration = int(now - state["first_ts"])
+                    await manager.send(
+                        "info",
+                        f"resolved: {title}",
+                        f"the condition above cleared after {duration}s.",
+                    )
 
             if iterations is None or ran < iterations:
                 await asyncio.sleep(cfg.monitor.watchdog_interval_seconds)
