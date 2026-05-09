@@ -93,7 +93,10 @@ def status() -> None:
 @db_app.command("init")
 def db_init() -> None:
     """Create the database file and apply all migrations."""
-    _not_implemented("db init")
+    from src.db import init_db
+
+    init_db()
+    typer.echo("db: ready")
 
 
 def main() -> None:
