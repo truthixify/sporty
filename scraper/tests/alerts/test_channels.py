@@ -44,7 +44,9 @@ async def test_telegram_uses_bot_api(monkeypatch) -> None:
 
     assert "/botabc/sendMessage" in captured["url"]
     assert "things broke" in captured["json"]
-    assert '"parse_mode": "HTML"' in captured["json"]
+    import json as _json
+    body = _json.loads(captured["json"])
+    assert body["parse_mode"] == "HTML"
 
 
 @pytest.mark.asyncio
