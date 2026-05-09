@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+from src.capture.browser import cleanup_stale_chromium_lock
 from src.capture.recovery import RecoveryRateLimiter
 
 
@@ -31,3 +35,37 @@ def test_attempt_count_reflects_pruned_buffer() -> None:
     # The seventh attempt at far-future ts prunes the rest.
     r.record_attempt(5000.0)
     assert r.attempt_count == 1
+
+
+def test_stale_lock_with_dead_pid_is_removed(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    # PID 999999 is overwhelmingly unlikely to be alive
+    (profile / "SingletonLock").symlink_to("hostname-999999")
+    (profile / "SingletonCookie").write_text("dummy")
+    assert cleanup_stale_chromium_lock(profile) is True
+    assert not (profile / "SingletonLock").exists()
+    assert not (profile / "SingletonCookie").exists()
+
+
+def test_lock_with_live_pid_is_left_alone(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    # Use our own pid as the lock target — it's definitely alive
+    (profile / "SingletonLock").symlink_to(f"hostname-{os.getpid()}")
+    assert cleanup_stale_chromium_lock(profile) is False
+    assert (profile / "SingletonLock").is_symlink()
+
+
+def test_no_lock_present_is_a_noop(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    assert cleanup_stale_chromium_lock(profile) is False
+
+
+def test_unparseable_lock_target_is_left_alone(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (profile / "SingletonLock").symlink_to("not-a-pid-format")
+    assert cleanup_stale_chromium_lock(profile) is False
+    assert (profile / "SingletonLock").is_symlink()

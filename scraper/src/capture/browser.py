@@ -6,8 +6,70 @@ tests."""
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import time
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
+
+
+log = logging.getLogger(__name__)
+
+
+_LOCK_FILES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
+
+
+def cleanup_stale_chromium_lock(profile_dir: Path) -> bool:
+    """Detect and remove a stale `SingletonLock` left behind by a Chromium
+    that crashed or was force-killed instead of closing cleanly.
+
+    Chromium creates `SingletonLock` as a symlink whose target encodes
+    `<hostname>-<pid>`. If that PID isn't a live process anymore, the lock is
+    stale and we can safely delete the Singleton* files. If the PID IS alive
+    we leave everything alone — the user has another Chromium running with
+    this profile and we do NOT want to corrupt it.
+
+    Returns True if a stale lock was cleaned, False otherwise.
+    """
+    lock = profile_dir / "SingletonLock"
+    if not lock.is_symlink():
+        return False
+    try:
+        target = os.readlink(lock)
+    except OSError:
+        return False
+    _hostname, _, pid_str = target.rpartition("-")
+    try:
+        pid = int(pid_str)
+    except ValueError:
+        return False
+    if _pid_alive(pid):
+        return False
+    log.info("removing stale chromium lock for dead pid %d in %s", pid, profile_dir)
+    for name in _LOCK_FILES:
+        try:
+            (profile_dir / name).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log.warning("could not remove %s: %s", name, exc)
+    return True
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but is owned by another user; treat as alive to be
+        # safe (we don't want to delete a real lock).
+        return True
+    except OSError:
+        return False
+    return True
 
 
 class _Page(Protocol):

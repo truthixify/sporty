@@ -191,6 +191,31 @@ def db_init() -> None:
     typer.echo("db: ready")
 
 
+@app.command()
+def dev(
+    no_capture: bool = typer.Option(False, "--no-capture", help="Skip the capture daemon."),
+    no_parse: bool = typer.Option(False, "--no-parse", help="Skip the parse loop."),
+    no_api: bool = typer.Option(False, "--no-api", help="Skip the FastAPI server."),
+    no_monitor: bool = typer.Option(False, "--no-monitor", help="Skip the watchdog."),
+    parse_interval: int = typer.Option(60, "--parse-interval", help="Seconds between parse runs."),
+    headless: Optional[bool] = typer.Option(
+        None, "--headless/--headed", help="Override the configured Chromium headless mode."
+    ),
+) -> None:
+    """Run capture + parse loop + api + monitor in one terminal with multiplexed output."""
+    from src.dev import run_dev_stack
+
+    code = run_dev_stack(
+        capture=not no_capture,
+        parse=not no_parse,
+        api=not no_api,
+        monitor=not no_monitor,
+        parse_interval_s=parse_interval,
+        headless=headless,
+    )
+    raise typer.Exit(code=code)
+
+
 def main() -> None:
     app()
 
