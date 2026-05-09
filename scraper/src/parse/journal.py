@@ -30,18 +30,44 @@ class JournalFrame:
 
 def iter_frames(path: Path) -> Iterator[JournalFrame]:
     """Yield normalized frames from a JSONL journal file. Skips malformed lines."""
-    with path.open("r", encoding="utf-8") as f:
-        for raw in f:
-            line = raw.strip()
-            if not line:
+    for frame, _, _ in iter_frames_with_offsets(path):
+        yield frame
+
+
+def iter_frames_with_offsets(
+    path: Path,
+    *,
+    start_offset: int = 0,
+    start_line: int = 0,
+) -> Iterator[tuple[JournalFrame, int, int]]:
+    """Yield `(frame, end_offset, line_no)` tuples, where `end_offset` is the
+    file's tell() right after the line was read (so it can be persisted as a
+    watermark) and `line_no` is the absolute 1-based line number assuming the
+    caller passes `start_line` as the line count already consumed.
+
+    Reads in binary mode so byte offsets are stable regardless of any newline
+    translation. Malformed JSON lines are silently skipped, but their offset
+    still advances so a re-run won't hit them again.
+    """
+    line_no = start_line
+    with path.open("rb") as f:
+        if start_offset > 0:
+            f.seek(start_offset)
+        while True:
+            raw = f.readline()
+            if not raw:
+                break
+            line_no += 1
+            offset = f.tell()
+            if not raw.strip():
                 continue
             try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
+                rec = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 continue
             frame = _normalize(rec)
             if frame is not None:
-                yield frame
+                yield frame, offset, line_no
 
 
 def _normalize(rec: dict[str, Any]) -> JournalFrame | None:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.db.models import (
@@ -11,12 +13,13 @@ from src.db.models import (
     EventParticipantFootball,
     EventRunner,
     Odds,
+    ParseWatermark,
     Schema,
     SchemaMarket,
     SchemaParticipant,
     Standing,
 )
-from src.parse.journal import iter_frames
+from src.parse.journal import iter_frames_with_offsets
 from src.parse.pairing import Pairer, ResponsePair
 from src.parse.products import (
     all_products,
@@ -122,26 +125,46 @@ class _Buffer:
             session.merge(st)
 
 
+@dataclass
+class _FileProgress:
+    final_offset: int
+    final_line: int
+    parsed_lines: int
+
+
 def ingest_journal(
     path: Path,
     session: Session,
     stats: IngestStats | None = None,
     buffer: _Buffer | None = None,
-) -> IngestStats:
-    """Read one journal file end-to-end and stage parsed rows for the session.
+    *,
+    start_offset: int = 0,
+    start_line: int = 0,
+) -> tuple[IngestStats, _FileProgress]:
+    """Read one journal file from `start_offset` and stage parsed rows for the
+    session. Returns updated stats and a `_FileProgress` carrying the byte
+    offset / line number that should be persisted as the next watermark.
 
     A single buffer can be reused across multiple files (see `ingest_journals`)
-    to dedupe rows that recur in different files. The buffer is flushed to the
-    session at the end of this call. The caller commits.
+    to dedupe rows that recur in different files. If no buffer is passed in,
+    one is created and flushed at the end of this call.
     """
     stats = stats or IngestStats()
     own_buffer = buffer is None
     buf = buffer if buffer is not None else _Buffer()
     pairer = Pairer()
     stats.files += 1
+    final_offset = start_offset
+    final_line = start_line
+    consumed = 0
 
-    for frame in iter_frames(path):
+    for frame, offset, line_no in iter_frames_with_offsets(
+        path, start_offset=start_offset, start_line=start_line,
+    ):
         stats.frames += 1
+        consumed += 1
+        final_offset = offset
+        final_line = line_no
         if frame.kind in ("open", "close"):
             pairer.reset()
             continue
@@ -165,17 +188,71 @@ def ingest_journal(
         buf.flush(session)
         session.flush()
 
-    return stats
+    return stats, _FileProgress(final_offset=final_offset, final_line=final_line, parsed_lines=consumed)
 
 
-def ingest_journals(paths: Iterable[Path], session: Session) -> IngestStats:
+def ingest_journals(
+    paths: Iterable[Path],
+    session: Session,
+    *,
+    incremental: bool = False,
+) -> IngestStats:
+    """Backfill or incremental parse over a list of journal files.
+
+    With `incremental=True`, each file is resumed from the byte offset stored
+    in `parse_watermarks`. With the default `incremental=False`, every file is
+    re-read from offset 0 (the parse is idempotent at the row level via
+    `session.merge`, but the work is wasted if the file hasn't changed).
+
+    After all files are flushed and the session is committed by the caller,
+    `parse_watermarks` rows are written so the next incremental run picks up
+    from where this one left off.
+    """
     stats = IngestStats()
     buffer = _Buffer()
+    progress: dict[str, _FileProgress] = {}
+
+    watermarks: dict[str, tuple[int, int]] = {}
+    if incremental:
+        for w in session.scalars(select(ParseWatermark)):
+            watermarks[w.journal_file] = (w.last_offset, w.last_line)
+
     for path in paths:
-        ingest_journal(path, session, stats, buffer)
+        key = str(path)
+        start_offset, start_line = watermarks.get(key, (0, 0))
+        _, prog = ingest_journal(
+            path, session, stats, buffer,
+            start_offset=start_offset, start_line=start_line,
+        )
+        progress[key] = prog
+
     buffer.flush(session)
     session.flush()
+    _update_watermarks(session, progress)
     return stats
+
+
+def _update_watermarks(session: Session, progress: dict[str, _FileProgress]) -> None:
+    """Persist the latest position for each journal file. `parsed_count` is
+    the count from the most recent run, not a lifetime sum, so a backfill
+    overwrites rather than inflating the value."""
+    now = time.time()
+    for key, prog in progress.items():
+        existing = session.get(ParseWatermark, key)
+        if existing is not None:
+            existing.last_offset = prog.final_offset
+            existing.last_line = prog.final_line
+            existing.parsed_count = prog.parsed_lines
+            existing.last_run_ts = now
+        else:
+            session.add(ParseWatermark(
+                journal_file=key,
+                last_offset=prog.final_offset,
+                last_line=prog.final_line,
+                parsed_count=prog.parsed_lines,
+                last_run_ts=now,
+            ))
+    session.flush()
 
 
 def _route(pair: ResponsePair, buf: _Buffer, stats: IngestStats) -> None:

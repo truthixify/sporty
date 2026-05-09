@@ -93,14 +93,10 @@ def parse(
         typer.echo(f"parse: no .jsonl files in {src_dir}", err=True)
         raise typer.Exit(code=2)
 
-    if not backfill:
-        typer.echo("parse: incremental mode not implemented; pass --backfill", err=True)
-        raise typer.Exit(code=1)
-
     engine = make_engine(cfg)
     Session = make_session_factory(engine)
     with Session() as session:
-        stats = ingest_journals(files, session)
+        stats = ingest_journals(files, session, incremental=not backfill)
         seasons_added = matchdays_added = 0
         if not skip_postprocess:
             seasons_added = detect_seasons(

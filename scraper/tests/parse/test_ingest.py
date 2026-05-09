@@ -131,7 +131,7 @@ def test_ingest_synthetic_journal_populates_db(tmp_path: Path) -> None:
     _make_journal(journal)
     session, _ = _make_session(tmp_path)
 
-    stats = ingest_journal(journal, session)
+    stats, _ = ingest_journal(journal, session)
     session.commit()
 
     assert stats.schemas == 1
@@ -169,11 +169,69 @@ def test_ingest_is_idempotent(tmp_path: Path) -> None:
     session.commit()
     first_event_count = len(session.scalars(select(Event)).all())
 
-    ingest_journal(journal, session)
+    ingest_journal(journal, session)  # type: ignore[func-returns-value]
     session.commit()
     second_event_count = len(session.scalars(select(Event)).all())
 
     assert first_event_count == second_event_count
+    session.close()
+
+
+def test_incremental_mode_resumes_from_watermark(tmp_path: Path) -> None:
+    from src.db.models import ParseWatermark
+
+    journal = tmp_path / "j.jsonl"
+    _make_journal(journal)
+    session, _ = _make_session(tmp_path)
+
+    stats1 = ingest_journals([journal], session, incremental=True)
+    session.commit()
+    assert stats1.frames > 0
+    wm = session.get(ParseWatermark, str(journal))
+    assert wm is not None
+    assert wm.last_offset == journal.stat().st_size
+
+    # Second incremental run with no new lines should consume zero frames
+    stats2 = ingest_journals([journal], session, incremental=True)
+    session.commit()
+    assert stats2.frames == 0
+    session.close()
+
+
+def test_incremental_picks_up_appended_lines(tmp_path: Path) -> None:
+    journal = tmp_path / "j.jsonl"
+    _make_journal(journal)
+    session, _ = _make_session(tmp_path)
+
+    ingest_journals([journal], session, incremental=True)
+    session.commit()
+
+    # Append a couple more synthetic frames
+    extra_block = _football_event_block(with_result=True)
+    extra_block["eBlockId"] = 22222
+    with journal.open("a") as f:
+        f.write(json.dumps(_frame_out(99, "/eventBlocks/event/result")) + "\n")
+        f.write(json.dumps(_frame_in(99, [extra_block])) + "\n")
+
+    stats = ingest_journals([journal], session, incremental=True)
+    session.commit()
+    assert stats.frames == 2
+    events = {e.e_block_id for e in session.scalars(select(Event)).all()}
+    assert 22222 in events
+    session.close()
+
+
+def test_backfill_ignores_existing_watermark(tmp_path: Path) -> None:
+    journal = tmp_path / "j.jsonl"
+    _make_journal(journal)
+    session, _ = _make_session(tmp_path)
+
+    ingest_journals([journal], session, incremental=True)
+    session.commit()
+
+    stats = ingest_journals([journal], session, incremental=False)
+    session.commit()
+    assert stats.frames > 0  # full file re-read
     session.close()
 
 
