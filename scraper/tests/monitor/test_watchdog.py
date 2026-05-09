@@ -261,6 +261,34 @@ async def test_watchdog_does_not_refire_same_title_within_cooldown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_watchdog_sends_startup_alert_once() -> None:
+    from src.config import Config, Monitor
+
+    sent: list[tuple[str, str]] = []
+
+    class Recorder(ConsoleChannel):
+        name = "rec"
+
+        async def send(self, severity, title, body):
+            sent.append((severity, title))
+
+    cfg = Config(monitor=Monitor(watchdog_interval_seconds=0))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "frames_per_min": 50.0, "events_per_hour": 100.0,
+            "last_event_age_s": 5.0, "last_event_ts": 1.0,
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        mgr = ChannelManager([_Bound(channel=Recorder(stream=io.StringIO()), severity_min="info")])
+        await run_watchdog(cfg, mgr, iterations=3, client=client)
+
+    titles = [t for _, t in sent]
+    assert titles.count("scraper: monitoring started") == 1
+
+
+@pytest.mark.asyncio
 async def test_resolution_sends_positive_alert() -> None:
     from src.config import Config, Monitor, Thresholds
 

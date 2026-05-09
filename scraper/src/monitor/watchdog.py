@@ -52,6 +52,7 @@ async def run_watchdog(
     active: dict[str, dict[str, float]] = {}
     refire_interval_s = cfg.monitor.thresholds.alert_refire_seconds
     ran = 0
+    sent_startup = False
 
     try:
         while iterations is None or ran < iterations:
@@ -75,6 +76,20 @@ async def run_watchdog(
                 continue
 
             _record_snapshot(session_factory, metrics)
+
+            if not sent_startup:
+                sent_startup = True
+                await manager.send(
+                    "info",
+                    "scraper: monitoring started",
+                    (
+                        f"watchdog is up. polling every {cfg.monitor.watchdog_interval_seconds}s. "
+                        f"current state: events_per_hour={metrics.get('events_per_hour')}, "
+                        f"frames_per_min={metrics.get('frames_per_min')}, "
+                        f"last_event_age_s={metrics.get('last_event_age_s')}. "
+                        f"you'll only get more messages when something breaches a threshold."
+                    ),
+                )
 
             alerts = list(evaluator.evaluate(metrics))
             alerts.extend(_db_alerts(session_factory, cfg, seen_sessions))

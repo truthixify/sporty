@@ -183,6 +183,43 @@ def status() -> None:
 
 
 @app.command()
+def alert_test(
+    severity: str = typer.Option("info", "--severity", help="info, warning, or critical."),
+) -> None:
+    """Fire one test alert through every enabled channel.
+
+    Use this to verify your Telegram/Discord/email/etc. plumbing actually
+    works without having to wait for a real threshold breach.
+    """
+    import asyncio
+
+    from src.alerts import build_manager
+    from src.config import load_config, load_secrets
+    from src.db import make_engine, make_session_factory
+
+    cfg = load_config()
+    secrets = load_secrets()
+    engine = make_engine(cfg)
+    session_factory = make_session_factory(engine)
+    manager = build_manager(cfg.alerts, secrets, session_factory=session_factory)
+    if not manager.channels:
+        typer.echo("alert-test: no channels enabled in config", err=True)
+        raise typer.Exit(code=2)
+
+    async def _go() -> None:
+        results = await manager.send(
+            severity,  # type: ignore[arg-type]
+            "scraper: alert plumbing test",
+            "if you can see this, your alert channels are wired up correctly.",
+        )
+        for name, err in results:
+            mark = "OK" if err is None else f"FAIL ({err})"
+            typer.echo(f"  {name}: {mark}")
+
+    asyncio.run(_go())
+
+
+@app.command()
 def diagnose() -> None:
     """Inspect every part of the local stack and explain what's wrong.
 
