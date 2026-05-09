@@ -48,13 +48,15 @@ def test_stale_lock_with_dead_pid_is_removed(tmp_path: Path) -> None:
     assert not (profile / "SingletonCookie").exists()
 
 
-def test_lock_with_live_pid_is_left_alone(tmp_path: Path) -> None:
+def test_lock_with_live_non_chromium_pid_is_removed(tmp_path: Path) -> None:
+    """When the lock points at a live PID that isn't a chromium-named
+    process (e.g. macOS recycled the PID for our shell), we still clean up."""
     profile = tmp_path / "profile"
     profile.mkdir()
-    # Use our own pid as the lock target — it's definitely alive
+    # Our own python process holds os.getpid() — alive but not Chromium
     (profile / "SingletonLock").symlink_to(f"hostname-{os.getpid()}")
-    assert cleanup_stale_chromium_lock(profile) is False
-    assert (profile / "SingletonLock").is_symlink()
+    assert cleanup_stale_chromium_lock(profile) is True
+    assert not (profile / "SingletonLock").exists()
 
 
 def test_no_lock_present_is_a_noop(tmp_path: Path) -> None:
@@ -63,9 +65,11 @@ def test_no_lock_present_is_a_noop(tmp_path: Path) -> None:
     assert cleanup_stale_chromium_lock(profile) is False
 
 
-def test_unparseable_lock_target_is_left_alone(tmp_path: Path) -> None:
+def test_unparseable_lock_target_is_cleaned_up(tmp_path: Path) -> None:
+    """A symlink we can't parse is treated as stale; real chromium always
+    writes a `<host>-<pid>` target."""
     profile = tmp_path / "profile"
     profile.mkdir()
     (profile / "SingletonLock").symlink_to("not-a-pid-format")
-    assert cleanup_stale_chromium_lock(profile) is False
-    assert (profile / "SingletonLock").is_symlink()
+    assert cleanup_stale_chromium_lock(profile) is True
+    assert not (profile / "SingletonLock").exists()

@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
@@ -17,6 +19,7 @@ log = logging.getLogger(__name__)
 
 
 _LOCK_FILES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
+_CHROMIUM_NAME_NEEDLES = ("chrome", "chromium")
 
 
 def cleanup_stale_chromium_lock(profile_dir: Path) -> bool:
@@ -24,36 +27,89 @@ def cleanup_stale_chromium_lock(profile_dir: Path) -> bool:
     that crashed or was force-killed instead of closing cleanly.
 
     Chromium creates `SingletonLock` as a symlink whose target encodes
-    `<hostname>-<pid>`. If that PID isn't a live process anymore, the lock is
-    stale and we can safely delete the Singleton* files. If the PID IS alive
-    we leave everything alone — the user has another Chromium running with
-    this profile and we do NOT want to corrupt it.
+    `<hostname>-<pid>`. We delete it when:
+      - the PID it points at is dead, OR
+      - the PID is alive but `ps` shows it as a non-Chromium process
+        (macOS reuses PIDs aggressively, so a stale lock can point at a
+        recently-recycled shell or python process).
 
-    Returns True if a stale lock was cleaned, False otherwise.
+    We leave the lock alone when:
+      - a live Chromium-named process holds it (the user really does have
+        another Chromium running with this profile), OR
+      - we couldn't introspect the PID (be conservative).
+
+    Prints a one-line decision to stderr so the user knows what happened.
+    Returns True if any lock files were removed.
     """
     lock = profile_dir / "SingletonLock"
-    if not lock.is_symlink():
+    if not lock.exists() and not lock.is_symlink():
         return False
-    try:
-        target = os.readlink(lock)
-    except OSError:
-        return False
-    _hostname, _, pid_str = target.rpartition("-")
-    try:
-        pid = int(pid_str)
-    except ValueError:
-        return False
-    if _pid_alive(pid):
-        return False
-    log.info("removing stale chromium lock for dead pid %d in %s", pid, profile_dir)
-    for name in _LOCK_FILES:
+
+    target_pid: int | None = None
+    if lock.is_symlink():
         try:
-            (profile_dir / name).unlink()
+            target = os.readlink(lock)
+            _hostname, _, pid_str = target.rpartition("-")
+            target_pid = int(pid_str)
+        except (OSError, ValueError):
+            target_pid = None
+
+    if target_pid is not None and _is_chromium_pid(target_pid):
+        sys.stderr.write(
+            f"capture: chromium profile at {profile_dir} is in use by pid {target_pid}.\n"
+            f"capture: close that Chromium window, or:\n"
+            f"capture:   pkill -f 'Chrome for Testing'   # kill all chrome-for-testing\n"
+            f"capture:   kill {target_pid}               # kill that specific process\n"
+        )
+        sys.stderr.flush()
+        return False
+
+    reason = (
+        f"pid {target_pid} is not a chromium process"
+        if target_pid is not None
+        else "no parseable lock target"
+    )
+    sys.stderr.write(
+        f"capture: removing stale chromium lock in {profile_dir} ({reason})\n"
+    )
+    sys.stderr.flush()
+    removed = False
+    for name in _LOCK_FILES:
+        path = profile_dir / name
+        try:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+                removed = True
         except FileNotFoundError:
             pass
         except OSError as exc:
-            log.warning("could not remove %s: %s", name, exc)
-    return True
+            sys.stderr.write(f"capture: could not remove {name}: {exc}\n")
+            sys.stderr.flush()
+    return removed
+
+
+def _is_chromium_pid(pid: int) -> bool:
+    """True if PID is alive AND its process name looks like Chromium."""
+    if not _pid_alive(pid):
+        return False
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "comm="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (subprocess.SubprocessError, OSError):
+        # Couldn't shell out; be conservative and assume the lock is real
+        return True
+    if result.returncode != 0:
+        # ps failed — likely the PID is dead by now
+        return False
+    name = result.stdout.strip().lower()
+    if not name:
+        # Process disappeared between alive-check and ps
+        return False
+    return any(needle in name for needle in _CHROMIUM_NAME_NEEDLES)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -64,8 +120,6 @@ def _pid_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        # Process exists but is owned by another user; treat as alive to be
-        # safe (we don't want to delete a real lock).
         return True
     except OSError:
         return False
