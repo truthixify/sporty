@@ -121,11 +121,19 @@ def parse(
 
 @app.command()
 def api(
-    host: str = typer.Option("127.0.0.1", "--host"),
-    port: int = typer.Option(8000, "--port"),
+    host: Optional[str] = typer.Option(None, "--host"),
+    port: Optional[int] = typer.Option(None, "--port"),
+    reload: bool = typer.Option(False, "--reload", help="Reload on code changes (dev only)."),
 ) -> None:
     """Run the FastAPI app exposing health, metrics, and structured queries."""
-    _not_implemented("api")
+    import uvicorn
+
+    from src.config import load_config
+
+    cfg = load_config()
+    bind_host = host or cfg.api.host
+    bind_port = port or cfg.api.port
+    uvicorn.run("src.api.app:create_app", host=bind_host, port=bind_port, factory=True, reload=reload)
 
 
 @app.command()
