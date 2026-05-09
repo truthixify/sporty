@@ -131,6 +131,32 @@ def test_email_raises_on_missing_secrets() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_writes_alerts_log_when_session_factory_provided(tmp_path) -> None:
+    from sqlalchemy import select
+
+    from src.config import Config, Database, Paths
+    from src.db import init_db, make_engine, make_session_factory
+    from src.db.models import AlertLog
+
+    cfg = Config(paths=Paths(data_dir=tmp_path), database=Database(url=f"sqlite:///{tmp_path / 'a.db'}"))
+    init_db(config=cfg)
+    engine = make_engine(cfg)
+    session_factory = make_session_factory(engine)
+
+    bound = [_Bound(channel=ConsoleChannel(stream=io.StringIO()), severity_min="info")]
+    mgr = ChannelManager(bound, session_factory=session_factory)
+    await mgr.send("warning", "test alert", "test body")
+
+    with session_factory() as s:
+        rows = s.scalars(select(AlertLog)).all()
+    assert len(rows) == 1
+    assert rows[0].severity == "warning"
+    assert rows[0].title == "test alert"
+    assert rows[0].channels == "console"
+    assert rows[0].delivered == 1
+
+
+@pytest.mark.asyncio
 async def test_one_failing_channel_does_not_block_others() -> None:
     delivered = []
 

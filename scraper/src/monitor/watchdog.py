@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from typing import Callable
 
 import httpx
+from sqlalchemy.orm import Session, sessionmaker
 
 from src.alerts import ChannelManager
 from src.config import Config
@@ -19,12 +22,14 @@ async def run_watchdog(
     *,
     iterations: int | None = None,
     client: httpx.AsyncClient | None = None,
+    session_factory: Callable[[], Session] | sessionmaker[Session] | None = None,
 ) -> int:
     """Poll /metrics/capture every `watchdog_interval_seconds`, dispatch alerts
-    on breached thresholds. `iterations=None` runs until cancelled (typical
-    daemon mode); a positive int caps the loop for tests.
+    on breached thresholds, and (if `session_factory` is provided) record each
+    sample to `metrics_snapshots` for retrospective debugging.
 
-    Returns the number of iterations that actually ran.
+    `iterations=None` runs until cancelled (typical daemon mode); a positive
+    int caps the loop for tests. Returns the number of iterations that ran.
     """
     base = f"http://{cfg.api.host}:{cfg.api.port}"
     own_client = client is None
@@ -47,6 +52,8 @@ async def run_watchdog(
                 await asyncio.sleep(cfg.monitor.watchdog_interval_seconds)
                 continue
 
+            _record_snapshot(session_factory, metrics)
+
             for alert in evaluate(metrics, cfg.monitor.thresholds):
                 key = alert.title
                 if last_alerts.get(key) == alert:
@@ -60,3 +67,25 @@ async def run_watchdog(
         if own_client:
             await http.aclose()
     return ran
+
+
+def _record_snapshot(
+    session_factory: Callable[[], Session] | sessionmaker[Session] | None,
+    metrics: dict,
+) -> None:
+    if session_factory is None:
+        return
+    try:
+        from src.db.models import MetricsSnapshot
+
+        with session_factory() as session:
+            session.add(MetricsSnapshot(
+                snapshot_ts=time.time(),
+                frames_per_min=metrics.get("frames_per_min"),
+                events_per_hour=metrics.get("events_per_hour"),
+                error_rate=None,
+                raw=metrics,
+            ))
+            session.commit()
+    except Exception as exc:
+        log.warning("metrics_snapshots write failed: %s", exc)

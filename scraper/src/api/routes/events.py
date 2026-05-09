@@ -6,62 +6,11 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
 from src.api.deps import SessionDep
-from src.db.models import Event, EventParticipantFootball, EventRunner, Odds, Standing
+from src.db import queries
+from src.db.models import Event
 
 
 router = APIRouter()
-
-
-def _event_payload(session, event: Event) -> dict:
-    parts = session.scalars(
-        select(EventParticipantFootball).where(EventParticipantFootball.e_block_id == event.e_block_id)
-    ).all()
-    runners = session.scalars(
-        select(EventRunner).where(EventRunner.e_block_id == event.e_block_id)
-    ).all()
-    odds = session.scalars(
-        select(Odds).where(Odds.e_block_id == event.e_block_id).order_by(Odds.slot)
-    ).all()
-    standings = session.scalars(
-        select(Standing).where(Standing.e_block_id == event.e_block_id).order_by(Standing.ranking)
-    ).all()
-    return {
-        "e_block_id": event.e_block_id,
-        "schema_id": event.schema_id,
-        "season_id": event.season_id,
-        "product": event.product,
-        "server_status": event.server_status,
-        "event_time": event.event_time,
-        "captured_ts": event.captured_ts,
-        "settled_ts": event.settled_ts,
-        "match_day": event.match_day,
-        "phase": event.phase,
-        "home_team_id": event.home_team_id,
-        "away_team_id": event.away_team_id,
-        "home_score": event.home_score,
-        "away_score": event.away_score,
-        "winner_id": event.winner_id,
-        "second_id": event.second_id,
-        "third_id": event.third_id,
-        "num_runners": event.num_runners,
-        "won_markets": event.won_markets.split(",") if event.won_markets else [],
-        "participants_football": [
-            {"side": p.side, "team_id": p.team_id, "stars": p.stars} for p in parts
-        ],
-        "runners": [
-            {"runner_id": r.runner_id, "trap": r.trap, "name": r.name, "prob": r.prob}
-            for r in runners
-        ],
-        "odds": [{"slot": o.slot, "odds": o.odds} for o in odds],
-        "standings": [
-            {
-                "team_id": s.team_id, "ranking": s.ranking, "points": s.points,
-                "wins": s.wins, "draws": s.draws, "losses": s.losses,
-                "goals_for": s.goals_for, "goals_against": s.goals_against,
-            }
-            for s in standings
-        ],
-    }
 
 
 @router.get("/events/recent")
@@ -110,7 +59,7 @@ def events_filter(
 
 @router.get("/events/{e_block_id}")
 def event_detail(session: SessionDep, e_block_id: int) -> dict:
-    event = session.get(Event, e_block_id)
-    if event is None:
+    out = queries.event_detail(session, e_block_id)
+    if out is None:
         raise HTTPException(status_code=404, detail=f"event {e_block_id} not found")
-    return _event_payload(session, event)
+    return out

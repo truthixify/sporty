@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
+from typing import Callable
+
+from sqlalchemy.orm import Session, sessionmaker
 
 from src.alerts.base import AlertChannel, Severity, severity_at_least
 from src.alerts.console import ConsoleChannel
@@ -24,10 +28,20 @@ class _Bound:
 
 class ChannelManager:
     """Owns the configured channels and fans an alert out to whichever ones
-    accept its severity. Failures on one channel never block the others."""
+    accept its severity. Failures on one channel never block the others.
 
-    def __init__(self, channels: list[_Bound]) -> None:
+    If `session_factory` is provided, every alert is also written to
+    `alerts_log` for the operator audit trail.
+    """
+
+    def __init__(
+        self,
+        channels: list[_Bound],
+        *,
+        session_factory: Callable[[], Session] | sessionmaker[Session] | None = None,
+    ) -> None:
         self._channels = channels
+        self._session_factory = session_factory
 
     @property
     def channels(self) -> list[AlertChannel]:
@@ -42,18 +56,49 @@ class ChannelManager:
                 continue
             coros.append(bound.channel.send(severity, title, body))
             names.append(bound.channel.name)
-        if not coros:
-            return results
-        gathered = await asyncio.gather(*coros, return_exceptions=True)
-        for name, outcome in zip(names, gathered):
-            err = outcome if isinstance(outcome, BaseException) else None
-            if err is not None:
-                log.warning("alert channel %s failed: %s", name, err)
-            results.append((name, err))
+        if coros:
+            gathered = await asyncio.gather(*coros, return_exceptions=True)
+            for name, outcome in zip(names, gathered):
+                err = outcome if isinstance(outcome, BaseException) else None
+                if err is not None:
+                    log.warning("alert channel %s failed: %s", name, err)
+                results.append((name, err))
+
+        self._write_log(severity, title, body, results)
         return results
 
+    def _write_log(
+        self,
+        severity: Severity,
+        title: str,
+        body: str,
+        results: list[tuple[str, BaseException | None]],
+    ) -> None:
+        if self._session_factory is None:
+            return
+        try:
+            from src.db.models import AlertLog
 
-def build_manager(alerts_cfg: Alerts, secrets: Secrets) -> ChannelManager:
+            with self._session_factory() as session:
+                session.add(AlertLog(
+                    fired_ts=time.time(),
+                    severity=severity,
+                    title=title,
+                    body=body,
+                    channels=",".join(name for name, _ in results),
+                    delivered=sum(1 for _, err in results if err is None),
+                ))
+                session.commit()
+        except Exception as exc:
+            log.warning("alerts_log write failed: %s", exc)
+
+
+def build_manager(
+    alerts_cfg: Alerts,
+    secrets: Secrets,
+    *,
+    session_factory: Callable[[], Session] | sessionmaker[Session] | None = None,
+) -> ChannelManager:
     bound: list[_Bound] = []
     for c in alerts_cfg.channels:
         if not c.enabled:
@@ -64,7 +109,7 @@ def build_manager(alerts_cfg: Alerts, secrets: Secrets) -> ChannelManager:
             log.warning("skipping channel %s: %s", c.kind, exc)
             continue
         bound.append(_Bound(channel=channel, severity_min=c.severity_min))
-    return ChannelManager(bound)
+    return ChannelManager(bound, session_factory=session_factory)
 
 
 def _build_channel(c: AlertChannelConfig, secrets: Secrets) -> AlertChannel:

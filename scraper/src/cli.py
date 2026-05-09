@@ -143,15 +143,18 @@ def monitor() -> None:
 
     from src.alerts import build_manager
     from src.config import load_config, load_secrets
+    from src.db import make_engine, make_session_factory
     from src.monitor import run_watchdog
 
     cfg = load_config()
     secrets = load_secrets()
-    manager = build_manager(cfg.alerts, secrets)
+    engine = make_engine(cfg)
+    session_factory = make_session_factory(engine)
+    manager = build_manager(cfg.alerts, secrets, session_factory=session_factory)
     if not manager.channels:
         typer.echo("monitor: no alert channels enabled in config", err=True)
         raise typer.Exit(code=2)
-    asyncio.run(run_watchdog(cfg, manager))
+    asyncio.run(run_watchdog(cfg, manager, session_factory=session_factory))
 
 
 @app.command()
