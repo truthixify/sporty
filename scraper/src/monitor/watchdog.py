@@ -6,14 +6,23 @@ import time
 from typing import Callable
 
 import httpx
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.alerts import ChannelManager
 from src.config import Config
-from src.monitor.thresholds import ThresholdAlert, evaluate
+from src.monitor.thresholds import ThresholdAlert, ThresholdEvaluator
 
 
 log = logging.getLogger(__name__)
+
+# Capture session end_reasons that should always page someone, mapped from
+# the daemon's exit codes (see src/capture/daemon.py).
+_RECOVERY_END_REASONS = {
+    "recovery_exhausted",      # exit 10
+    "no_iframe",               # exit 11
+    "too_many_recoveries",     # exit 12
+}
 
 
 async def run_watchdog(
@@ -25,16 +34,19 @@ async def run_watchdog(
     session_factory: Callable[[], Session] | sessionmaker[Session] | None = None,
 ) -> int:
     """Poll /metrics/capture every `watchdog_interval_seconds`, dispatch alerts
-    on breached thresholds, and (if `session_factory` is provided) record each
-    sample to `metrics_snapshots` for retrospective debugging.
+    for breached thresholds (with sustain windows), unhealthy capture session
+    exits, and stale parser watermarks. If `session_factory` is provided each
+    sample is also recorded to `metrics_snapshots`.
 
-    `iterations=None` runs until cancelled (typical daemon mode); a positive
-    int caps the loop for tests. Returns the number of iterations that ran.
+    `iterations=None` runs until cancelled; a positive int caps the loop for
+    tests. Returns the number of iterations that ran.
     """
     base = f"http://{cfg.api.host}:{cfg.api.port}"
     own_client = client is None
     http = client or httpx.AsyncClient(timeout=10.0)
     last_alerts: dict[str, ThresholdAlert] = {}
+    seen_sessions: set[str] = set()
+    evaluator = ThresholdEvaluator(cfg.monitor.thresholds)
     ran = 0
 
     try:
@@ -54,7 +66,10 @@ async def run_watchdog(
 
             _record_snapshot(session_factory, metrics)
 
-            for alert in evaluate(metrics, cfg.monitor.thresholds):
+            alerts = list(evaluator.evaluate(metrics))
+            alerts.extend(_db_alerts(session_factory, cfg, seen_sessions))
+
+            for alert in alerts:
                 key = alert.title
                 if last_alerts.get(key) == alert:
                     continue
@@ -67,6 +82,55 @@ async def run_watchdog(
         if own_client:
             await http.aclose()
     return ran
+
+
+def _db_alerts(
+    session_factory: Callable[[], Session] | sessionmaker[Session] | None,
+    cfg: Config,
+    seen_sessions: set[str],
+) -> list[ThresholdAlert]:
+    """Pull alerts that come from DB state (capture session exits, stale
+    parser watermarks). Returns an empty list if no session_factory is bound
+    or if anything goes wrong (we never want a flaky DB to silence the rest of
+    the watchdog)."""
+    if session_factory is None:
+        return []
+    out: list[ThresholdAlert] = []
+    try:
+        from src.db.models import CaptureSession, ParseWatermark
+
+        with session_factory() as session:
+            for s in session.scalars(
+                select(CaptureSession)
+                .where(CaptureSession.end_reason.in_(_RECOVERY_END_REASONS))
+                .order_by(CaptureSession.started_ts.desc())
+                .limit(20)
+            ):
+                if s.session_id in seen_sessions:
+                    continue
+                seen_sessions.add(s.session_id)
+                out.append(ThresholdAlert(
+                    severity="critical",
+                    title=f"capture: session ended ({s.end_reason})",
+                    body=(
+                        f"session_id={s.session_id} "
+                        f"frames_in={s.frames_in} frames_out={s.frames_out} "
+                        f"errors={s.error_count}"
+                    ),
+                ))
+
+            latest_run = session.scalar(select(func.max(ParseWatermark.last_run_ts)))
+            if latest_run is not None:
+                age = time.time() - float(latest_run)
+                if age > cfg.monitor.thresholds.parser_watermark_stale_seconds:
+                    out.append(ThresholdAlert(
+                        severity="warning",
+                        title="parse: watermark stale",
+                        body=f"no parser run in {int(age)}s",
+                    ))
+    except Exception as exc:
+        log.warning("watchdog: db_alerts query failed: %s", exc)
+    return out
 
 
 def _record_snapshot(

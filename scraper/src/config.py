@@ -65,6 +65,9 @@ class Thresholds(BaseModel):
     min_frames_per_min: float = 10.0
     min_events_per_hour: float = 30.0
     parser_watermark_stale_seconds: int = 900
+    sustain_frames_seconds: float = 300.0
+    sustain_events_seconds: float = 1800.0
+    stale_data_seconds: float = 600.0
 
 
 class Monitor(BaseModel):
