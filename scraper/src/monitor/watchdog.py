@@ -51,6 +51,8 @@ async def run_watchdog(
     # because it includes the elapsed seconds).
     active: dict[str, dict[str, float]] = {}
     refire_interval_s = cfg.monitor.thresholds.alert_refire_seconds
+    heartbeat_interval = cfg.monitor.heartbeat_interval_seconds
+    last_heartbeat_ts = 0.0
     ran = 0
     sent_startup = False
 
@@ -79,6 +81,12 @@ async def run_watchdog(
 
             if not sent_startup:
                 sent_startup = True
+                last_heartbeat_ts = now
+                hb_note = (
+                    f"heartbeat every {heartbeat_interval}s is enabled."
+                    if heartbeat_interval > 0
+                    else "you'll only get more messages on threshold breaches."
+                )
                 await manager.send(
                     "info",
                     "scraper: monitoring started",
@@ -87,9 +95,13 @@ async def run_watchdog(
                         f"current state: events_per_hour={metrics.get('events_per_hour')}, "
                         f"frames_per_min={metrics.get('frames_per_min')}, "
                         f"last_event_age_s={metrics.get('last_event_age_s')}. "
-                        f"you'll only get more messages when something breaches a threshold."
+                        f"{hb_note}"
                     ),
                 )
+
+            if heartbeat_interval > 0 and now - last_heartbeat_ts >= heartbeat_interval:
+                last_heartbeat_ts = now
+                await _send_heartbeat(manager, metrics, session_factory)
 
             alerts = list(evaluator.evaluate(metrics))
             alerts.extend(_db_alerts(session_factory, cfg, seen_sessions))
@@ -117,6 +129,44 @@ async def run_watchdog(
         if own_client:
             await http.aclose()
     return ran
+
+
+async def _send_heartbeat(
+    manager: ChannelManager,
+    metrics: dict,
+    session_factory: Callable[[], Session] | sessionmaker[Session] | None,
+) -> None:
+    """Periodic 'still alive' message with current metrics and DB row counts.
+    Distinct from the startup alert (which fires once at process start)."""
+    counts = ""
+    if session_factory is not None:
+        try:
+            from sqlalchemy import func, select
+
+            from src.db.models import Event, Schema, Standing
+
+            with session_factory() as s:
+                ev = s.scalar(select(func.count()).select_from(Event)) or 0
+                sc = s.scalar(select(func.count()).select_from(Schema)) or 0
+                st = s.scalar(select(func.count()).select_from(Standing)) or 0
+                counts = f" | db: events={ev} schemas={sc} standings={st}"
+        except Exception as exc:
+            log.warning("heartbeat: db count query failed: %s", exc)
+
+    fpm = metrics.get("frames_per_min")
+    eph = metrics.get("events_per_hour")
+    age = metrics.get("last_event_age_s")
+    body = (
+        f"events_per_hour={eph} frames_per_min={fpm:.1f if isinstance(fpm,(int,float)) else fpm} "
+        f"last_event_age_s={age}{counts}"
+    )
+    # Prefer formatting safely without nested f-string conditionals
+    fpm_s = f"{fpm:.1f}" if isinstance(fpm, (int, float)) else str(fpm)
+    body = (
+        f"events_per_hour={eph} frames_per_min={fpm_s} "
+        f"last_event_age_s={age}{counts}"
+    )
+    await manager.send("info", "scraper: heartbeat", body)
 
 
 async def _maybe_send(

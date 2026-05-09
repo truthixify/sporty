@@ -33,6 +33,8 @@ api:
 
 monitor:
   watchdog_interval_seconds: 60
+  # 0 disables the periodic "still alive" message; e.g. 3600 = hourly.
+  heartbeat_interval_seconds: 0
   thresholds:
     min_frames_per_min: 10
     min_events_per_hour: 30

@@ -73,6 +73,9 @@ class Thresholds(BaseModel):
 
 class Monitor(BaseModel):
     watchdog_interval_seconds: int = 60
+    # Optional periodic "still alive" message with current metrics + DB row
+    # counts. 0 disables it. Typical values: 3600 (hourly), 21600 (every 6h).
+    heartbeat_interval_seconds: int = 0
     thresholds: Thresholds = Field(default_factory=Thresholds)
 
 

@@ -261,6 +261,37 @@ async def test_watchdog_does_not_refire_same_title_within_cooldown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_fires_on_interval() -> None:
+    from src.config import Config, Monitor
+
+    sent: list[str] = []
+
+    class Recorder(ConsoleChannel):
+        name = "rec"
+
+        async def send(self, severity, title, body):
+            sent.append(title)
+
+    cfg = Config(monitor=Monitor(
+        watchdog_interval_seconds=0,
+        heartbeat_interval_seconds=0,  # 0 means disabled in code path test below
+    ))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "frames_per_min": 50.0, "events_per_hour": 100.0,
+            "last_event_age_s": 5.0, "last_event_ts": 1.0,
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        mgr = ChannelManager([_Bound(channel=Recorder(stream=io.StringIO()), severity_min="info")])
+        await run_watchdog(cfg, mgr, iterations=3, client=client)
+
+    # heartbeat_interval=0 means disabled; only the startup alert should fire.
+    assert sent.count("scraper: heartbeat") == 0
+
+
+@pytest.mark.asyncio
 async def test_watchdog_sends_startup_alert_once() -> None:
     from src.config import Config, Monitor
 
