@@ -13,6 +13,7 @@ from src.db.models import (
     EventParticipantFootball,
     EventRunner,
     Odds,
+    OddsHistory,
     ParseWatermark,
     Schema,
     SchemaMarket,
@@ -58,6 +59,8 @@ class _Buffer:
         self.participants: dict[tuple[int, str], SchemaParticipant] = {}
         self.events: dict[int, Event] = {}
         self.odds: dict[tuple[int, int], Odds] = {}
+        self.odds_history: dict[tuple[int, int, float], OddsHistory] = {}
+        self._last_odds_value: dict[tuple[int, int], float] = {}
         self.standings: dict[tuple[int, str], Standing] = {}
         self.fb_parts: dict[tuple[int, str], EventParticipantFootball] = {}
         self.runners: dict[tuple[int, str], EventRunner] = {}
@@ -91,8 +94,21 @@ class _Buffer:
     def upsert_participant(self, p: SchemaParticipant) -> None:
         self.participants[(p.schema_id, p.team_id)] = p
 
-    def upsert_odds(self, o: Odds) -> None:
-        self.odds[(o.e_block_id, o.slot)] = o
+    def upsert_odds(self, o: Odds, snapshot_ts: float) -> None:
+        key = (o.e_block_id, o.slot)
+        prev = self._last_odds_value.get(key)
+        # Only record a history row when the price actually moved within this
+        # ingest run. Cross-run movement is captured the next time the value
+        # changes; the spec accepts that approximation.
+        if prev is None or prev != o.odds:
+            self.odds_history[(o.e_block_id, o.slot, snapshot_ts)] = OddsHistory(
+                e_block_id=o.e_block_id,
+                slot=o.slot,
+                snapshot_ts=snapshot_ts,
+                odds=o.odds,
+            )
+            self._last_odds_value[key] = o.odds
+        self.odds[key] = o
 
     def upsert_standing(self, s: Standing) -> None:
         self.standings[(s.e_block_id, s.team_id)] = s
@@ -117,6 +133,8 @@ class _Buffer:
             session.merge(e)
         for o in self.odds.values():
             session.merge(o)
+        for h in self.odds_history.values():
+            session.merge(h)
         for fp in self.fb_parts.values():
             session.merge(fp)
         for r in self.runners.values():
@@ -317,7 +335,7 @@ def _stage_event_blocks(pair: ResponsePair, buf: _Buffer, stats: IngestStats) ->
             _ensure_schema_placeholder(buf, e.schema_id, e.product, pair.response_ts)
             stats.events += 1
         for o in odds:
-            buf.upsert_odds(o)
+            buf.upsert_odds(o, snapshot_ts=pair.response_ts)
             stats.odds += 1
         for fp in fb_parts:
             buf.upsert_fb_part(fp)

@@ -235,6 +235,44 @@ def test_backfill_ignores_existing_watermark(tmp_path: Path) -> None:
     session.close()
 
 
+def test_odds_history_records_changes(tmp_path: Path) -> None:
+    from src.db.models import OddsHistory
+
+    journal = tmp_path / "j.jsonl"
+    block_v1 = _football_event_block(with_result=False)
+    block_v2 = _football_event_block(with_result=False)
+    block_v2["events"][0]["data"]["oddValues"] = ["1.55", "5.00"]  # home moved 1.50 -> 1.55
+    records = [
+        {"t": 1.0, "kind": "open", "url": "wss://x"},
+        _frame_out(1, "/eventBlocks/event/data"),
+        _frame_in(1, [block_v1]),
+        _frame_out(2, "/eventBlocks/event/data"),
+        _frame_in(2, [block_v2]),
+        {"t": 99.0, "kind": "close", "url": "wss://x"},
+    ]
+    with journal.open("w") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+
+    session, _ = _make_session(tmp_path)
+    ingest_journal(journal, session)
+    session.commit()
+
+    history = sorted(
+        session.scalars(select(OddsHistory).where(OddsHistory.slot == 0)).all(),
+        key=lambda r: r.snapshot_ts,
+    )
+    assert len(history) == 2
+    assert [h.odds for h in history] == [1.50, 1.55]
+
+    history_unchanged = session.scalars(
+        select(OddsHistory).where(OddsHistory.slot == 1)
+    ).all()
+    assert len(history_unchanged) == 1
+    assert history_unchanged[0].odds == 5.00
+    session.close()
+
+
 def test_ingest_journals_handles_multiple_files(tmp_path: Path) -> None:
     j1 = tmp_path / "j1.jsonl"
     j2 = tmp_path / "j2.jsonl"
