@@ -66,7 +66,39 @@ def parse(
     ),
 ) -> None:
     """Parse JSONL journal frames into the database."""
-    _not_implemented("parse")
+    from src.config import load_config
+    from src.db import init_db, make_engine, make_session_factory
+    from src.parse import ingest_journals
+
+    cfg = load_config()
+    init_db(config=cfg)
+
+    src_dir = source or cfg.paths.captures_dir
+    if not src_dir.exists():
+        typer.echo(f"parse: source not found: {src_dir}", err=True)
+        raise typer.Exit(code=2)
+
+    files = sorted(p for p in src_dir.glob("*.jsonl") if p.is_file())
+    if not files:
+        typer.echo(f"parse: no .jsonl files in {src_dir}", err=True)
+        raise typer.Exit(code=2)
+
+    if not backfill:
+        typer.echo("parse: incremental mode not implemented; pass --backfill", err=True)
+        raise typer.Exit(code=1)
+
+    engine = make_engine(cfg)
+    Session = make_session_factory(engine)
+    with Session() as session:
+        stats = ingest_journals(files, session)
+        session.commit()
+
+    typer.echo(
+        f"parse: files={stats.files} frames={stats.frames} pairs={stats.pairs} "
+        f"schemas={stats.schemas} events={stats.events} odds={stats.odds} "
+        f"standings={stats.standings} runners={stats.runners} "
+        f"unknown={stats.unknown_blocks}"
+    )
 
 
 @app.command()
