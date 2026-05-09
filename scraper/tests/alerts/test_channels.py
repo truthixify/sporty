@@ -44,6 +44,33 @@ async def test_telegram_uses_bot_api(monkeypatch) -> None:
 
     assert "/botabc/sendMessage" in captured["url"]
     assert "things broke" in captured["json"]
+    assert '"parse_mode": "HTML"' in captured["json"]
+
+
+@pytest.mark.asyncio
+async def test_telegram_escapes_html_in_body() -> None:
+    """The alert body is full of underscores and special chars that broke
+    Markdown parse mode. HTML mode only requires escaping <, >, &."""
+    captured = {}
+
+    def transport_handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = request.read().decode()
+        return httpx.Response(200, json={"ok": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport_handler)) as client:
+        ch = TelegramChannel(bot_token="abc", chat_id="42", client=client)
+        await ch.send(
+            "warning",
+            "capture: low frame rate",
+            "frames_per_min=4.2 below 10.0 for 300s. <script>alert(1)</script>",
+        )
+
+    payload = captured["json"]
+    # Underscores are NOT escaped (they're fine in HTML mode)
+    assert "frames_per_min" in payload
+    # < and > ARE escaped so the body can't inject HTML
+    assert "&lt;script&gt;" in payload
+    assert "<script>alert" not in payload
 
 
 @pytest.mark.asyncio
