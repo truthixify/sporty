@@ -50,7 +50,7 @@ def test_aggregator_builds_snapshot_when_all_events_settled(tmp_path: Path) -> N
     s.commit()
     assert written == 1
 
-    snap = s.get(MatchDaySnapshot, (season_id, 1))
+    snap = s.get(MatchDaySnapshot, (season_id, "", 1))
     assert snap is not None
     assert len(snap.matches_json["matches"]) == 2
     assert {m["e_block_id"] for m in snap.matches_json["matches"]} == {10, 11}
@@ -78,7 +78,39 @@ def test_aggregator_skips_unfinished_matchday(tmp_path: Path) -> None:
 
     written = aggregate_matchdays(s)
     assert written == 0
-    assert s.get(MatchDaySnapshot, (season_id, 2)) is None
+    assert s.get(MatchDaySnapshot, (season_id, "", 2)) is None
+    s.close()
+
+
+def test_tournament_aggregator_groups_by_phase(tmp_path: Path) -> None:
+    s = _session(tmp_path)
+    s.add(Schema(schema_id=2, product="football", kind="tournament",
+                 first_seen_ts=0, last_seen_ts=0))
+    season = Season(schema_id=2, season_index=1, started_at="2026-05-09T10:00:00Z")
+    s.add(season)
+    s.flush()
+
+    s.add(Event(e_block_id=100, schema_id=2, season_id=season.season_id,
+                product="football", phase="KNOCKOUT", match_day=1,
+                event_time="2026-05-09T11:00:00Z",
+                captured_ts=1.0, settled_ts=2.0,
+                home_team_id="A", away_team_id="B", home_score=2, away_score=0))
+    s.add(Event(e_block_id=101, schema_id=2, season_id=season.season_id,
+                product="football", phase="FINAL", match_day=1,
+                event_time="2026-05-09T12:00:00Z",
+                captured_ts=1.0, settled_ts=2.0,
+                home_team_id="C", away_team_id="D", home_score=1, away_score=1))
+    s.flush()
+
+    written = aggregate_matchdays(s)
+    assert written == 2  # one per (phase, match_day) tuple
+
+    snap_knockout = s.get(MatchDaySnapshot, (season.season_id, "KNOCKOUT", 1))
+    snap_final = s.get(MatchDaySnapshot, (season.season_id, "FINAL", 1))
+    assert snap_knockout is not None
+    assert snap_final is not None
+    assert snap_knockout.matches_json["matches"][0]["e_block_id"] == 100
+    assert snap_final.matches_json["matches"][0]["e_block_id"] == 101
     s.close()
 
 

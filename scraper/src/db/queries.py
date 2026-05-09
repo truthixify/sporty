@@ -127,14 +127,19 @@ def matchday_view(
     session: Session,
     season_id: int,
     match_day: int,
+    phase: str = "",
 ) -> dict[str, Any] | None:
-    snap = session.get(MatchDaySnapshot, (season_id, match_day))
+    """Return one matchday snapshot. For league seasons, `phase=""` is correct.
+    For tournaments, the caller must pass the phase ("GROUPS", "KNOCKOUT",
+    "FINAL") since the same `match_day` value can recur across phases."""
+    snap = session.get(MatchDaySnapshot, (season_id, phase.upper() if phase else "", match_day))
     if snap is None:
         return None
     season = session.get(Season, season_id)
     schema = session.get(Schema, season.schema_id) if season is not None else None
     return {
         "season_id": season_id,
+        "phase": snap.phase,
         "match_day": match_day,
         "finalized_ts": snap.finalized_ts,
         "schema": (

@@ -9,15 +9,25 @@ from src.db.models import Event, MatchDaySnapshot, Season, Standing
 
 
 def aggregate_matchdays(session: Session) -> int:
-    """Build a `MatchDaySnapshot` row for every (season, match_day) where every
-    match has settled. Idempotent via session.merge on the composite PK.
+    """Build a `MatchDaySnapshot` row for every (season, phase, match_day) where
+    every match in the bucket has settled.
 
-    Returns the number of snapshots written/updated.
+    For league seasons the bucket key is just `match_day` (and `phase` is the
+    empty-string default). Tournament seasons include `phase`, because the
+    same `match_day` value can recur across phases (e.g. quarter-final leg 1
+    and leg 2 in KNOCKOUT).
+
+    Idempotent via session.merge on the composite PK.
     """
+    from src.db.models import Schema  # local import to avoid cycle
+
     seasons = session.scalars(select(Season).order_by(Season.season_id)).all()
     written = 0
 
     for season in seasons:
+        schema = session.get(Schema, season.schema_id)
+        is_tournament = schema is not None and schema.kind == "tournament"
+
         events = session.scalars(
             select(Event)
             .where(Event.season_id == season.season_id, Event.product == "football")
@@ -26,16 +36,17 @@ def aggregate_matchdays(session: Session) -> int:
         if not events:
             continue
 
-        by_md: dict[int, list[Event]] = {}
+        buckets: dict[tuple[str, int], list[Event]] = {}
         for e in events:
             if e.match_day is None:
                 continue
-            by_md.setdefault(e.match_day, []).append(e)
+            phase = (e.phase or "").upper() if is_tournament else ""
+            buckets.setdefault((phase, e.match_day), []).append(e)
 
-        for match_day, evts in by_md.items():
+        for (phase, match_day), evts in buckets.items():
             if not all(e.settled_ts is not None for e in evts):
                 continue
-            snapshot = _build_snapshot(season.season_id, match_day, evts, session)
+            snapshot = _build_snapshot(season.season_id, phase, match_day, evts, session)
             session.merge(snapshot)
             written += 1
 
@@ -45,6 +56,7 @@ def aggregate_matchdays(session: Session) -> int:
 
 def _build_snapshot(
     season_id: int,
+    phase: str,
     match_day: int,
     events: list[Event],
     session: Session,
@@ -120,6 +132,7 @@ def _build_snapshot(
 
     return MatchDaySnapshot(
         season_id=season_id,
+        phase=phase,
         match_day=match_day,
         finalized_ts=finalized_ts,
         matches_json={"matches": matches},

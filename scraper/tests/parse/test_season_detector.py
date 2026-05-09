@@ -17,9 +17,9 @@ def _session(tmp_path: Path):
     return make_session_factory(engine)()
 
 
-def _seed_schema(session, schema_id: int = 1) -> None:
+def _seed_schema(session, schema_id: int = 1, kind: str = "league") -> None:
     session.add(Schema(
-        schema_id=schema_id, product="football", kind="league",
+        schema_id=schema_id, product="football", kind=kind,
         first_seen_ts=0.0, last_seen_ts=0.0,
     ))
 
@@ -97,6 +97,54 @@ def test_require_standings_reset_accepts_when_points_zero(tmp_path: Path) -> Non
 
     new = detect_seasons(s, require_standings_reset=True)
     assert new == 2
+    s.close()
+
+
+def test_tournament_boundary_on_phase_reset(tmp_path: Path) -> None:
+    s = _session(tmp_path)
+    _seed_schema(s, schema_id=10, kind="tournament")
+    phases = [
+        ("GROUPS", 1), ("GROUPS", 2),
+        ("KNOCKOUT", 1),
+        ("FINAL", 1),
+        ("GROUPS", 1), ("GROUPS", 2),
+    ]
+    for i, (phase, md) in enumerate(phases, start=1):
+        s.add(Event(
+            e_block_id=i, schema_id=10, product="football",
+            phase=phase, match_day=md,
+            event_time=f"2026-05-09T1{i}:00:00Z", captured_ts=1.0,
+        ))
+    s.flush()
+
+    new = detect_seasons(s, require_standings_reset=False)
+    assert new == 2
+
+    seasons = sorted(s.scalars(select(Season)).all(), key=lambda x: x.season_index)
+    assert [x.season_index for x in seasons] == [1, 2]
+
+    by_eb = {e.e_block_id: e for e in s.scalars(select(Event))}
+    assert by_eb[4].season_id == seasons[0].season_id
+    assert by_eb[5].season_id == seasons[1].season_id
+    s.close()
+
+
+def test_tournament_unknown_phase_ignored(tmp_path: Path) -> None:
+    s = _session(tmp_path)
+    _seed_schema(s, schema_id=11, kind="tournament")
+    s.add(Event(e_block_id=1, schema_id=11, product="football",
+                phase="GROUPS", match_day=1, event_time="2026-05-09T10:00:00Z",
+                captured_ts=1.0))
+    s.add(Event(e_block_id=2, schema_id=11, product="football",
+                phase="WEIRD", match_day=1, event_time="2026-05-09T11:00:00Z",
+                captured_ts=1.0))
+    s.add(Event(e_block_id=3, schema_id=11, product="football",
+                phase="KNOCKOUT", match_day=1, event_time="2026-05-09T12:00:00Z",
+                captured_ts=1.0))
+    s.flush()
+
+    new = detect_seasons(s, require_standings_reset=False)
+    assert new == 1
     s.close()
 
 

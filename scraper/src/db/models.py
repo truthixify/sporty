@@ -231,6 +231,9 @@ class MatchDaySnapshot(Base):
     season_id: Mapped[int] = mapped_column(
         ForeignKey("seasons.season_id"), primary_key=True
     )
+    # Empty string for league seasons; "GROUPS" / "KNOCKOUT" / "FINAL" for
+    # tournaments where the same match_day exists in multiple phases.
+    phase: Mapped[str] = mapped_column(Text, primary_key=True, default="", server_default="")
     match_day: Mapped[int] = mapped_column(Integer, primary_key=True)
     finalized_ts: Mapped[float | None] = mapped_column(Float)
     matches_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)

@@ -54,17 +54,30 @@ def list_matchdays(session: SessionDep, season_id: int) -> dict:
     snaps = session.scalars(
         select(MatchDaySnapshot)
         .where(MatchDaySnapshot.season_id == season_id)
-        .order_by(MatchDaySnapshot.match_day)
+        .order_by(MatchDaySnapshot.phase, MatchDaySnapshot.match_day)
     ).all()
     return {"season_id": season_id, "matchdays": [
-        {"match_day": s.match_day, "finalized_ts": s.finalized_ts, "summary": s.summary_json}
+        {
+            "phase": s.phase,
+            "match_day": s.match_day,
+            "finalized_ts": s.finalized_ts,
+            "summary": s.summary_json,
+        }
         for s in snaps
     ]}
 
 
 @router.get("/football/seasons/{season_id}/matchdays/{match_day}")
-def matchday_view(session: SessionDep, season_id: int, match_day: int) -> dict:
-    out = queries.matchday_view(session, season_id, match_day)
+def matchday_view(
+    session: SessionDep,
+    season_id: int,
+    match_day: int,
+    phase: str = Query(
+        "",
+        description="Phase for tournaments (GROUPS/KNOCKOUT/FINAL). Empty for leagues.",
+    ),
+) -> dict:
+    out = queries.matchday_view(session, season_id, match_day, phase)
     if out is None:
         raise HTTPException(status_code=404, detail="matchday snapshot not found")
     return out
