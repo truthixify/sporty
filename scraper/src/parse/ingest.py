@@ -1,0 +1,247 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterable
+
+from sqlalchemy.orm import Session
+
+from src.db.models import (
+    Event,
+    EventParticipantFootball,
+    EventRunner,
+    Odds,
+    Schema,
+    SchemaMarket,
+    SchemaParticipant,
+    Standing,
+)
+from src.parse.journal import iter_frames
+from src.parse.pairing import Pairer, ResponsePair
+from src.parse.products import detect_for_event_block, detect_for_schema_template
+from src.parse.products.base import schema_rows_from_template
+
+
+@dataclass
+class IngestStats:
+    files: int = 0
+    frames: int = 0
+    pairs: int = 0
+    schemas: int = 0
+    events: int = 0
+    odds: int = 0
+    standings: int = 0
+    runners: int = 0
+    participants: int = 0
+    unknown_blocks: int = 0
+    skipped_resources: dict[str, int] = field(default_factory=dict)
+
+
+class _Buffer:
+    """In-memory dedup buffer keyed by primary key. Combined with a single
+    `flush` at the end, this avoids the within-transaction UNIQUE conflicts you
+    get from naively re-merging the same PK across many journal frames."""
+
+    def __init__(self) -> None:
+        self.schemas: dict[int, Schema] = {}
+        self.markets: dict[tuple[int, int], SchemaMarket] = {}
+        self.participants: dict[tuple[int, str], SchemaParticipant] = {}
+        self.events: dict[int, Event] = {}
+        self.odds: dict[tuple[int, int], Odds] = {}
+        self.standings: dict[tuple[int, str], Standing] = {}
+        self.fb_parts: dict[tuple[int, str], EventParticipantFootball] = {}
+        self.runners: dict[tuple[int, str], EventRunner] = {}
+
+    def upsert_schema(self, schema: Schema) -> None:
+        existing = self.schemas.get(schema.schema_id)
+        if existing is None:
+            self.schemas[schema.schema_id] = schema
+            return
+        existing.last_seen_ts = max(existing.last_seen_ts, schema.last_seen_ts)
+        for col in Schema.__table__.columns:
+            new_val = schema.__dict__.get(col.name)
+            if col.name in ("first_seen_ts", "last_seen_ts"):
+                continue
+            if new_val is not None:
+                setattr(existing, col.name, new_val)
+
+    def upsert_event(self, event: Event) -> None:
+        existing = self.events.get(event.e_block_id)
+        if existing is None:
+            self.events[event.e_block_id] = event
+            return
+        for col in Event.__table__.columns:
+            new_val = event.__dict__.get(col.name)
+            if new_val is not None:
+                setattr(existing, col.name, new_val)
+
+    def upsert_market(self, m: SchemaMarket) -> None:
+        self.markets[(m.schema_id, m.slot)] = m
+
+    def upsert_participant(self, p: SchemaParticipant) -> None:
+        self.participants[(p.schema_id, p.team_id)] = p
+
+    def upsert_odds(self, o: Odds) -> None:
+        self.odds[(o.e_block_id, o.slot)] = o
+
+    def upsert_standing(self, s: Standing) -> None:
+        self.standings[(s.e_block_id, s.team_id)] = s
+
+    def upsert_fb_part(self, fp: EventParticipantFootball) -> None:
+        self.fb_parts[(fp.e_block_id, fp.side)] = fp
+
+    def upsert_runner(self, r: EventRunner) -> None:
+        self.runners[(r.e_block_id, r.runner_id)] = r
+
+    def flush(self, session: Session) -> None:
+        for s in self.schemas.values():
+            existing = session.get(Schema, s.schema_id)
+            if existing is not None:
+                s.first_seen_ts = min(existing.first_seen_ts, s.first_seen_ts)
+            session.merge(s)
+        for m in self.markets.values():
+            session.merge(m)
+        for p in self.participants.values():
+            session.merge(p)
+        for e in self.events.values():
+            session.merge(e)
+        for o in self.odds.values():
+            session.merge(o)
+        for fp in self.fb_parts.values():
+            session.merge(fp)
+        for r in self.runners.values():
+            session.merge(r)
+        for st in self.standings.values():
+            session.merge(st)
+
+
+def ingest_journal(
+    path: Path,
+    session: Session,
+    stats: IngestStats | None = None,
+    buffer: _Buffer | None = None,
+) -> IngestStats:
+    """Read one journal file end-to-end and stage parsed rows for the session.
+
+    A single buffer can be reused across multiple files (see `ingest_journals`)
+    to dedupe rows that recur in different files. The buffer is flushed to the
+    session at the end of this call. The caller commits.
+    """
+    stats = stats or IngestStats()
+    own_buffer = buffer is None
+    buf = buffer if buffer is not None else _Buffer()
+    pairer = Pairer()
+    stats.files += 1
+
+    for frame in iter_frames(path):
+        stats.frames += 1
+        if frame.kind in ("open", "close"):
+            pairer.reset()
+            continue
+        if frame.kind == "iframe_url":
+            continue
+        if frame.payload is None:
+            continue
+        if frame.direction == "out":
+            pairer.feed_request(frame.ts, frame.payload)
+            continue
+        if frame.direction == "in":
+            pair = pairer.feed_response(frame.ts, frame.payload)
+            if pair is None:
+                continue
+            stats.pairs += 1
+            if pair.status_code != 200:
+                continue
+            _route(pair, buf, stats)
+
+    if own_buffer:
+        buf.flush(session)
+
+    return stats
+
+
+def ingest_journals(paths: Iterable[Path], session: Session) -> IngestStats:
+    stats = IngestStats()
+    buffer = _Buffer()
+    for path in paths:
+        ingest_journal(path, session, stats, buffer)
+    buffer.flush(session)
+    return stats
+
+
+def _route(pair: ResponsePair, buf: _Buffer, stats: IngestStats) -> None:
+    res = pair.resource
+    if "/playlists/" in res:
+        _stage_schemas(pair, buf, stats)
+    elif res in ("/eventBlocks/event/data", "/eventBlocks/event/result"):
+        _stage_event_blocks(pair, buf, stats)
+    elif res == "/eventBlocks/stats":
+        _stage_stats_blocks(pair, buf, stats)
+    else:
+        stats.skipped_resources[res] = stats.skipped_resources.get(res, 0) + 1
+
+
+def _stage_schemas(pair: ResponsePair, buf: _Buffer, stats: IngestStats) -> None:
+    body = pair.body
+    if not isinstance(body, list):
+        return
+    for tpl in body:
+        if not isinstance(tpl, dict):
+            continue
+        product = detect_for_schema_template(tpl)
+        if product is None:
+            continue
+        schema, markets, participants = schema_rows_from_template(
+            tpl, product.name, pair.response_ts,
+        )
+        if schema.schema_id is None:
+            continue
+        buf.upsert_schema(schema)
+        for m in markets:
+            buf.upsert_market(m)
+        for p in participants:
+            buf.upsert_participant(p)
+        stats.schemas += 1
+
+
+def _stage_event_blocks(pair: ResponsePair, buf: _Buffer, stats: IngestStats) -> None:
+    body = pair.body
+    if not isinstance(body, list):
+        return
+    for block in body:
+        if not isinstance(block, dict):
+            continue
+        product = detect_for_event_block(block)
+        if product is None:
+            stats.unknown_blocks += 1
+            continue
+        events, odds, fb_parts, runners, _ = product.extract_event_rows(
+            block, pair.resource, pair.response_ts,
+        )
+        for e in events:
+            buf.upsert_event(e)
+            stats.events += 1
+        for o in odds:
+            buf.upsert_odds(o)
+            stats.odds += 1
+        for fp in fb_parts:
+            buf.upsert_fb_part(fp)
+            stats.participants += 1
+        for r in runners:
+            buf.upsert_runner(r)
+            stats.runners += 1
+
+
+def _stage_stats_blocks(pair: ResponsePair, buf: _Buffer, stats: IngestStats) -> None:
+    body = pair.body
+    if not isinstance(body, list):
+        return
+    for block in body:
+        if not isinstance(block, dict):
+            continue
+        product = detect_for_event_block(block)
+        if product is None:
+            continue
+        for s in product.extract_stats_rows(block, pair.response_ts):
+            buf.upsert_standing(s)
+            stats.standings += 1
