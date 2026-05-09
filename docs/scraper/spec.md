@@ -188,7 +188,7 @@ Implementations:
 
 - **`TelegramChannel`** — primary channel, default-on. Uses Bot API. Config: bot token + chat id.
 - **`DiscordChannel`** — webhook URL.
-- **`EmailChannel`** — SMTP or transactional API (SendGrid/Resend).
+- **`EmailChannel`** — Resend HTTP API (`POST /emails` with a Bearer-token API key). No SMTP.
 - **`SlackChannel`** — webhook URL.
 - **`ConsoleChannel`** — prints to stderr. Default for dev.
 
@@ -775,10 +775,7 @@ TELEGRAM_CHAT_ID=
 
 DISCORD_WEBHOOK_URL=
 
-SMTP_HOST=
-SMTP_PORT=587
-SMTP_USER=
-SMTP_PASS=
+RESEND_API_KEY=
 EMAIL_FROM=
 EMAIL_TO=
 
