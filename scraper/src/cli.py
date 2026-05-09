@@ -64,11 +64,14 @@ def parse(
         "--source",
         help="Directory of JSONL captures to parse (defaults to configured captures_dir).",
     ),
+    skip_postprocess: bool = typer.Option(
+        False, "--skip-postprocess", help="Skip season detection and matchday aggregation."
+    ),
 ) -> None:
     """Parse JSONL journal frames into the database."""
     from src.config import load_config
     from src.db import init_db, make_engine, make_session_factory
-    from src.parse import ingest_journals
+    from src.parse import aggregate_matchdays, detect_seasons, ingest_journals
 
     cfg = load_config()
     init_db(config=cfg)
@@ -91,13 +94,21 @@ def parse(
     Session = make_session_factory(engine)
     with Session() as session:
         stats = ingest_journals(files, session)
+        seasons_added = matchdays_added = 0
+        if not skip_postprocess:
+            seasons_added = detect_seasons(
+                session,
+                require_standings_reset=cfg.parse.season_detector.require_standings_reset,
+            )
+            matchdays_added = aggregate_matchdays(session)
         session.commit()
 
     typer.echo(
         f"parse: files={stats.files} frames={stats.frames} pairs={stats.pairs} "
         f"schemas={stats.schemas} events={stats.events} odds={stats.odds} "
         f"standings={stats.standings} runners={stats.runners} "
-        f"unknown={stats.unknown_blocks}"
+        f"unknown={stats.unknown_blocks} "
+        f"seasons_new={seasons_added} matchday_snapshots={matchdays_added}"
     )
 
 

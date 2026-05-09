@@ -156,6 +156,7 @@ def ingest_journal(
 
     if own_buffer:
         buf.flush(session)
+        session.flush()
 
     return stats
 
@@ -166,6 +167,7 @@ def ingest_journals(paths: Iterable[Path], session: Session) -> IngestStats:
     for path in paths:
         ingest_journal(path, session, stats, buffer)
     buffer.flush(session)
+    session.flush()
     return stats
 
 
