@@ -1,0 +1,30 @@
+[Unit]
+Description=Virtustec capture daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scraper
+EnvironmentFile=-/opt/scraper/.env
+ExecStart=/opt/scraper/scripts/capture_wrapper.sh
+Restart=always
+RestartSec=30
+StartLimitBurst=20
+StartLimitIntervalSec=900
+
+# Make exit codes 10, 11, 12 non-failure for systemd's restart limit accounting,
+# they're handled inside the wrapper which decides the delay.
+SuccessExitStatus=10 11 12
+
+User=scraper
+Group=scraper
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/scraper /opt/scraper/data /opt/scraper/logs /opt/scraper/browser_profile
+
+[Install]
+WantedBy=multi-user.target

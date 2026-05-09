@@ -1,0 +1,23 @@
+[Unit]
+Description=Virtustec scraper watchdog
+After=scraper-api.service
+Wants=scraper-api.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scraper
+EnvironmentFile=-/opt/scraper/.env
+ExecStart=/usr/local/bin/uv run scraper monitor
+Restart=always
+RestartSec=30
+
+User=scraper
+Group=scraper
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

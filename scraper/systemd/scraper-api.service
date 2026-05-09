@@ -1,0 +1,24 @@
+[Unit]
+Description=Virtustec scraper FastAPI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scraper
+EnvironmentFile=-/opt/scraper/.env
+ExecStart=/usr/local/bin/uv run scraper api
+Restart=always
+RestartSec=10
+
+User=scraper
+Group=scraper
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/scraper
+
+[Install]
+WantedBy=multi-user.target

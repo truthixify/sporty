@@ -1,0 +1,20 @@
+[Unit]
+Description=Virtustec scraper incremental parser
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/scraper
+EnvironmentFile=-/opt/scraper/.env
+ExecStart=/usr/local/bin/uv run scraper parse --backfill
+
+User=scraper
+Group=scraper
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/scraper
+
+[Install]
+WantedBy=multi-user.target
