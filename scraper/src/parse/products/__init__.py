@@ -5,11 +5,21 @@ from typing import Any
 from src.parse.products.base import Product
 from src.parse.products.dogs import DogsProduct
 from src.parse.products.football import FootballProduct
+from src.parse.products.horses import HorsesProduct
+from src.parse.products.motorbikes import MotorbikesProduct
+from src.parse.products.race_base import RaceProduct
+from src.parse.products.speedway import SpeedwayProduct
 
 
+# FootballProduct first because its event_participant class types are
+# disjoint from races. Race products are listed in stable order; per-event
+# dispatch is unambiguous because each race's participantClassType is unique.
 _REGISTRY: list[Product] = [
     FootballProduct(),
     DogsProduct(),
+    HorsesProduct(),
+    SpeedwayProduct(),
+    MotorbikesProduct(),
 ]
 
 
@@ -34,7 +44,11 @@ def detect_for_schema_template(tpl: dict[str, Any]) -> Product | None:
 __all__ = [
     "DogsProduct",
     "FootballProduct",
+    "HorsesProduct",
+    "MotorbikesProduct",
     "Product",
+    "RaceProduct",
+    "SpeedwayProduct",
     "all_products",
     "detect_for_event_block",
     "detect_for_schema_template",

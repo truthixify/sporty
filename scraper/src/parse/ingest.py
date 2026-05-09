@@ -222,6 +222,7 @@ def _stage_event_blocks(pair: ResponsePair, buf: _Buffer, stats: IngestStats) ->
         )
         for e in events:
             buf.upsert_event(e)
+            _ensure_schema_placeholder(buf, e.schema_id, e.product, pair.response_ts)
             stats.events += 1
         for o in odds:
             buf.upsert_odds(o)
@@ -232,6 +233,25 @@ def _stage_event_blocks(pair: ResponsePair, buf: _Buffer, stats: IngestStats) ->
         for r in runners:
             buf.upsert_runner(r)
             stats.runners += 1
+
+
+def _ensure_schema_placeholder(buf: _Buffer, schema_id: int | None, product: str, ts: float) -> None:
+    """Race products receive their `/playlists/` only if the user navigates to
+    that sport in the iframe; the prototype's captures rarely include them.
+    Without a Schema row for the event's schema_id, we'd have FK-orphaned rows
+    and no way to label the league. So when an event references a schema we
+    haven't seen, drop in a minimal placeholder. A real schema row arriving
+    later overwrites the placeholder fields via Buffer.upsert_schema.
+    """
+    if schema_id is None or schema_id in buf.schemas:
+        return
+    buf.upsert_schema(Schema(
+        schema_id=schema_id,
+        product=product,
+        kind="unknown",
+        first_seen_ts=ts,
+        last_seen_ts=ts,
+    ))
 
 
 def _stage_stats_blocks(pair: ResponsePair, buf: _Buffer, stats: IngestStats) -> None:

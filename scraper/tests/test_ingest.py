@@ -137,8 +137,11 @@ def test_ingest_synthetic_journal_populates_db(tmp_path: Path) -> None:
     assert stats.schemas == 1
     assert stats.events >= 4
 
-    schemas = session.scalars(select(Schema)).all()
-    assert {s.schema_id for s in schemas} == {41104}
+    schemas = {s.schema_id: s for s in session.scalars(select(Schema)).all()}
+    assert set(schemas) == {41104, 71001}
+    assert schemas[41104].kind == "league"
+    assert schemas[71001].kind == "unknown"
+    assert schemas[71001].product == "dogs"
 
     events = session.scalars(select(Event)).all()
     by_id = {e.e_block_id: e for e in events}
