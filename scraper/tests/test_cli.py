@@ -1,6 +1,6 @@
 from typer.testing import CliRunner
 
-from scraper.cli import app
+from src.cli import app
 
 
 runner = CliRunner()

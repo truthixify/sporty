@@ -5,7 +5,7 @@ from typing import Optional
 
 import typer
 
-from scraper import __version__
+from src import __version__
 
 app = typer.Typer(
     name="scraper",
