@@ -6,8 +6,8 @@ import sys
 import time
 
 from src.capture.browser import (
-    cleanup_stale_chromium_lock,
     discover_iframe_url,
+    prepare_profile_for_launch,
     reload_iframe,
     reload_parent,
     renavigate_parent,
@@ -85,7 +85,7 @@ async def run_capture(
 
     end_reason = "ok"
     exit_code = EXIT_CLEAN
-    cleanup_stale_chromium_lock(cfg.paths.profile_dir)
+    prepare_profile_for_launch(cfg.paths.profile_dir)
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
             user_data_dir=str(cfg.paths.profile_dir),

@@ -3,7 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from src.capture.browser import cleanup_stale_chromium_lock
+from src.capture.browser import (
+    cleanup_stale_chromium_lock,
+    clear_chromium_crash_state,
+)
 from src.capture.recovery import RecoveryRateLimiter
 
 
@@ -73,3 +76,44 @@ def test_unparseable_lock_target_is_cleaned_up(tmp_path: Path) -> None:
     (profile / "SingletonLock").symlink_to("not-a-pid-format")
     assert cleanup_stale_chromium_lock(profile) is True
     assert not (profile / "SingletonLock").exists()
+
+
+def test_clear_crash_state_patches_preferences(tmp_path: Path) -> None:
+    import json
+    profile = tmp_path / "profile"
+    (profile / "Default").mkdir(parents=True)
+    prefs = profile / "Default" / "Preferences"
+    prefs.write_text(json.dumps({
+        "profile": {"exit_type": "Crashed", "exited_cleanly": False},
+        "other": {"value": 1},
+    }))
+    assert clear_chromium_crash_state(profile) is True
+    loaded = json.loads(prefs.read_text())
+    assert loaded["profile"]["exit_type"] == "Normal"
+    assert loaded["profile"]["exited_cleanly"] is True
+    assert loaded["other"]["value"] == 1
+
+
+def test_clear_crash_state_noop_when_already_clean(tmp_path: Path) -> None:
+    import json
+    profile = tmp_path / "profile"
+    (profile / "Default").mkdir(parents=True)
+    prefs = profile / "Default" / "Preferences"
+    prefs.write_text(json.dumps({
+        "profile": {"exit_type": "Normal", "exited_cleanly": True},
+    }))
+    assert clear_chromium_crash_state(profile) is False
+
+
+def test_clear_crash_state_noop_when_no_preferences(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    assert clear_chromium_crash_state(profile) is False
+
+
+def test_clear_crash_state_skips_corrupt_json(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    (profile / "Default").mkdir(parents=True)
+    (profile / "Default" / "Preferences").write_text("{not valid json")
+    # Should not raise
+    assert clear_chromium_crash_state(profile) is False

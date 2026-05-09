@@ -6,6 +6,7 @@ tests."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -20,6 +21,15 @@ log = logging.getLogger(__name__)
 
 _LOCK_FILES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
 _CHROMIUM_NAME_NEEDLES = ("chrome", "chromium")
+
+
+def prepare_profile_for_launch(profile_dir: Path) -> None:
+    """Run all the pre-launch hygiene steps for a Chromium persistent
+    profile so a previous unclean exit doesn't manifest as either a
+    SingletonLock conflict or the 'Something went wrong when opening your
+    profile' dialog. Idempotent and safe to call before every launch."""
+    cleanup_stale_chromium_lock(profile_dir)
+    clear_chromium_crash_state(profile_dir)
 
 
 def cleanup_stale_chromium_lock(profile_dir: Path) -> bool:
@@ -86,6 +96,45 @@ def cleanup_stale_chromium_lock(profile_dir: Path) -> bool:
             sys.stderr.write(f"capture: could not remove {name}: {exc}\n")
             sys.stderr.flush()
     return removed
+
+
+def clear_chromium_crash_state(profile_dir: Path) -> bool:
+    """Patch `Default/Preferences` so Chromium doesn't pop up the
+    'Something went wrong when opening your profile' restore dialog after a
+    forced exit. The dialog is benign in dev but it gets in the way of the
+    capture daemon's iframe-discovery polling.
+
+    Sets `profile.exit_type = "Normal"` and `profile.exited_cleanly = true`.
+    Also blanks `profile.exited_cleanly` and `exit_type` in the top-level
+    `Local State` file (which Chrome also checks). Returns True if anything
+    was patched.
+    """
+    changed = False
+    prefs_path = profile_dir / "Default" / "Preferences"
+    if prefs_path.is_file():
+        try:
+            with prefs_path.open("r", encoding="utf-8") as f:
+                prefs = json.load(f)
+            profile_section = prefs.setdefault("profile", {})
+            if profile_section.get("exit_type") != "Normal":
+                profile_section["exit_type"] = "Normal"
+                changed = True
+            if profile_section.get("exited_cleanly") is not True:
+                profile_section["exited_cleanly"] = True
+                changed = True
+            if changed:
+                with prefs_path.open("w", encoding="utf-8") as f:
+                    json.dump(prefs, f)
+                sys.stderr.write(
+                    f"capture: patched Chromium crash markers in {prefs_path}\n"
+                )
+                sys.stderr.flush()
+        except (OSError, json.JSONDecodeError) as exc:
+            sys.stderr.write(
+                f"capture: couldn't patch {prefs_path}: {exc}\n"
+            )
+            sys.stderr.flush()
+    return changed
 
 
 def _is_chromium_pid(pid: int) -> bool:

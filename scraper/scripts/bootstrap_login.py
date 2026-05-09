@@ -20,8 +20,11 @@ async def main() -> int:
         print(f"playwright missing: {exc}", file=sys.stderr)
         return 2
 
+    from src.capture.browser import prepare_profile_for_launch
+
     cfg = load_config()
     cfg.paths.profile_dir.mkdir(parents=True, exist_ok=True)
+    prepare_profile_for_launch(cfg.paths.profile_dir)
     print(f"profile dir: {cfg.paths.profile_dir}")
     print(f"opening: {cfg.capture.parent_url}")
     print("complete login in the browser; close the window when ready.")
