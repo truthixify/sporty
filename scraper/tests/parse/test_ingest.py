@@ -222,6 +222,121 @@ def test_incremental_picks_up_appended_lines(tmp_path: Path) -> None:
     session.close()
 
 
+def test_prune_watermarks_external_filter(tmp_path: Path) -> None:
+    """The --external mode removes rows pointing outside the configured
+    captures_dir."""
+    import os
+
+    from typer.testing import CliRunner
+
+    from src.cli import app
+    from src.db.models import ParseWatermark
+
+    captures_dir = tmp_path / "data" / "captures"
+    captures_dir.mkdir(parents=True)
+
+    # Write config.yaml pointing at the SAME database that _make_session uses
+    # (sqlite at tmp_path/scraper.db) so the CLI sees our seed rows.
+    db_path = tmp_path / "scraper.db"
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        f"paths:\n"
+        f"  data_dir: {tmp_path}/data\n"
+        f"  captures_dir: {captures_dir}\n"
+        f"database:\n"
+        f"  url: sqlite:///{db_path}\n"
+    )
+
+    inside_jsonl = captures_dir / "vs_2026-05-10.jsonl"
+    inside_jsonl.write_text("{}\n")
+    outside_jsonl = tmp_path / "elsewhere" / "vs_2026-05-09.jsonl"
+    outside_jsonl.parent.mkdir()
+    outside_jsonl.write_text("{}\n")
+
+    session, _ = _make_session(tmp_path)
+    session.add(ParseWatermark(
+        journal_file=str(inside_jsonl.resolve()),
+        last_offset=0, last_line=0, parsed_count=0, last_run_ts=1.0,
+    ))
+    session.add(ParseWatermark(
+        journal_file=str(outside_jsonl.resolve()),
+        last_offset=0, last_line=0, parsed_count=0, last_run_ts=1.0,
+    ))
+    session.commit()
+    session.close()
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        result = runner.invoke(app, [
+            "db", "prune-watermarks",
+            "--external", "--no-missing", "--no-duplicates", "--yes",
+        ])
+    finally:
+        os.chdir(cwd)
+    assert result.exit_code == 0, result.stdout
+
+    session, _ = _make_session(tmp_path)
+    keys = {w.journal_file for w in session.scalars(select(ParseWatermark)).all()}
+    assert str(inside_jsonl.resolve()) in keys
+    assert str(outside_jsonl.resolve()) not in keys
+    session.close()
+
+
+def test_prune_watermarks_file_filter(tmp_path: Path) -> None:
+    """The --file mode removes exactly one row by exact string match."""
+    import os
+
+    from typer.testing import CliRunner
+
+    from src.cli import app
+    from src.db.models import ParseWatermark
+
+    captures_dir = tmp_path / "data" / "captures"
+    captures_dir.mkdir(parents=True)
+    db_path = tmp_path / "scraper.db"
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        f"paths:\n"
+        f"  data_dir: {tmp_path}/data\n"
+        f"  captures_dir: {captures_dir}\n"
+        f"database:\n"
+        f"  url: sqlite:///{db_path}\n"
+    )
+
+    session, _ = _make_session(tmp_path)
+    session.add(ParseWatermark(
+        journal_file="../some/relative/path.jsonl",
+        last_offset=0, last_line=0, parsed_count=0, last_run_ts=1.0,
+    ))
+    session.add(ParseWatermark(
+        journal_file=str((captures_dir / "vs_2026-05-10.jsonl").resolve()),
+        last_offset=0, last_line=0, parsed_count=0, last_run_ts=1.0,
+    ))
+    session.commit()
+    session.close()
+
+    runner = CliRunner()
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        result = runner.invoke(app, [
+            "db", "prune-watermarks",
+            "--file", "../some/relative/path.jsonl",
+            "--no-missing", "--no-duplicates",
+            "--yes",
+        ])
+    finally:
+        os.chdir(cwd)
+    assert result.exit_code == 0, result.stdout
+
+    session, _ = _make_session(tmp_path)
+    keys = {w.journal_file for w in session.scalars(select(ParseWatermark)).all()}
+    assert "../some/relative/path.jsonl" not in keys
+    session.close()
+
+
 def test_legacy_relative_path_watermark_is_auto_migrated(tmp_path: Path) -> None:
     """If the DB has a leftover relative-path watermark for a file we now
     address by absolute path, the next parse run should drop the alias."""

@@ -378,10 +378,20 @@ def db_prune_watermarks(
         help="Drop watermarks that are aliases of another (different string, "
              "same resolved path). Keeps the absolute-path version. Default on.",
     ),
+    external: bool = typer.Option(
+        False, "--external",
+        help="Drop watermarks whose journal file is outside the configured "
+             "captures_dir. Useful when you backfilled from a one-off source.",
+    ),
+    file: Optional[str] = typer.Option(
+        None, "--file",
+        help="Drop the watermark for exactly this `journal_file` value "
+             "(string match against the row's key, not a resolved path).",
+    ),
     all_: bool = typer.Option(
         False, "--all",
         help="Wipe every watermark and force the next parse to re-scan from "
-             "offset 0 across the board. Overrides --missing/--duplicates.",
+             "offset 0 across the board. Overrides every other filter.",
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
 ) -> None:
@@ -394,7 +404,10 @@ def db_prune_watermarks(
       `data/captures/x.jsonl` and `/abs/path/data/captures/x.jsonl` from
       before/after the absolute-path migration). Keeps the absolute one.
 
-    Use --all to wipe everything.
+    Opt-in modes:
+    - **--external**: rows for files outside the configured captures_dir.
+    - **--file PATH**: drop exactly the row whose journal_file equals PATH.
+    - **--all**: wipe everything.
     """
     from collections import defaultdict
     from pathlib import Path
@@ -406,6 +419,11 @@ def db_prune_watermarks(
     from src.db.models import ParseWatermark
 
     cfg = load_config()
+    try:
+        captures_root = cfg.paths.captures_dir.resolve()
+    except (OSError, RuntimeError):
+        captures_root = cfg.paths.captures_dir
+
     engine = make_engine(cfg)
     Session = make_session_factory(engine)
     with Session() as session:
@@ -437,6 +455,23 @@ def db_prune_watermarks(
                     for r in group:
                         if r is not keep:
                             doomed.append(r)
+            if external:
+                for r in rows:
+                    try:
+                        resolved = Path(r.journal_file).resolve()
+                    except (OSError, RuntimeError):
+                        # Can't resolve; treat as external since it can't be
+                        # under our captures_dir either
+                        doomed.append(r)
+                        continue
+                    try:
+                        resolved.relative_to(captures_root)
+                    except ValueError:
+                        doomed.append(r)
+            if file is not None:
+                for r in rows:
+                    if r.journal_file == file:
+                        doomed.append(r)
 
         # Dedupe doomed (a row might match both --missing and --duplicates)
         seen_ids = set()
