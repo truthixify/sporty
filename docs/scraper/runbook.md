@@ -33,12 +33,15 @@ bash setup_vps.sh
 After the script finishes, do the manual steps it prints:
 
 1. `cp config.example.yaml config.yaml`, then edit `paths.*`, `database.url`,
-   `capture.headless: true`, alert channels.
+   `capture.headless: true`, alert channels. Leave `capture.persistent_profile`
+   at its default (`false`) — SportyBet's /virtual page serves the WS feed
+   anonymously, so each daemon run uses an ephemeral Chromium profile that's
+   discarded on shutdown. No login required.
 2. `cp .env.example .env`, then fill in `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`,
    `RESEND_API_KEY` etc. for the channels you enabled.
-3. Tunnel a VNC session and run `uv run python scripts/bootstrap_login.py` once
-   to complete the SportyBet login. The `browser_profile/` directory will then
-   carry the session for headless runs.
+3. **No login step needed.** (If SportyBet ever starts gating the page,
+   tunnel a VNC session, run `uv run python scripts/bootstrap_login.py` to
+   log in once, and set `capture.persistent_profile: true` in config.yaml.)
 4. Sanity-check capture by hand for two minutes:
    `sudo -u scraper bash -c 'cd /opt/scraper/scraper && uv run scraper capture --duration 120'`
 5. Enable the services:
@@ -60,7 +63,7 @@ After the script finishes, do the manual steps it prints:
 
 | Symptom | Action |
 | --- | --- |
-| Telegram alert "no frames in 5 min" | `journalctl -u scraper-capture -n 200`. Likely session died and the recovery ladder ran out. Tunnel VNC, re-run `bootstrap_login.py`, then `systemctl restart scraper-capture`. |
+| Telegram alert "no frames in 5 min" | `journalctl -u scraper-capture -n 200`. Likely the recovery ladder ran out (Cloudflare or similar). Just `systemctl restart scraper-capture`. (If you've enabled `capture.persistent_profile` and login expired, re-run `bootstrap_login.py` over a VNC tunnel first.) |
 | Telegram alert "watermark stuck" | `systemctl status scraper-parse`. If failing, run by hand: `sudo -u scraper bash -c 'cd /opt/scraper/scraper && uv run scraper parse --backfill'` and inspect the traceback. |
 | `scraper status` shows lots of 401s | Session expired mid-day. Wait one tick (recovery is automatic) or `systemctl restart scraper-capture`. |
 | Watchdog silent for >24h | `systemctl status scraper-monitor`. Check `journalctl -u scraper-monitor`. |
