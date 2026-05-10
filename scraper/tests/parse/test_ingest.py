@@ -187,7 +187,8 @@ def test_incremental_mode_resumes_from_watermark(tmp_path: Path) -> None:
     stats1 = ingest_journals([journal], session, incremental=True)
     session.commit()
     assert stats1.frames > 0
-    wm = session.get(ParseWatermark, str(journal))
+    # Watermark uses the resolved absolute path, not whatever string the caller passed
+    wm = session.get(ParseWatermark, str(journal.resolve()))
     assert wm is not None
     assert wm.last_offset == journal.stat().st_size
 
@@ -218,6 +219,28 @@ def test_incremental_picks_up_appended_lines(tmp_path: Path) -> None:
     assert stats.frames == 2
     events = {e.e_block_id for e in session.scalars(select(Event)).all()}
     assert 22222 in events
+    session.close()
+
+
+def test_relative_and_absolute_paths_share_a_watermark(tmp_path: Path, monkeypatch) -> None:
+    """The same file referenced via different relative paths from different
+    cwds must collapse to one watermark row, not duplicate."""
+    from src.db.models import ParseWatermark
+
+    journal = tmp_path / "j.jsonl"
+    _make_journal(journal)
+    session, _ = _make_session(tmp_path)
+
+    # First call: pass the absolute path
+    ingest_journals([journal], session, incremental=True)
+    session.commit()
+    # Second call: pass a relative path while cwd is the tmp_path
+    monkeypatch.chdir(tmp_path)
+    ingest_journals([Path("j.jsonl")], session, incremental=True)
+    session.commit()
+
+    wms = session.scalars(select(ParseWatermark)).all()
+    assert len(wms) == 1  # collapsed
     session.close()
 
 

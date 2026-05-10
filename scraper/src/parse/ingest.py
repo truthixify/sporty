@@ -235,8 +235,12 @@ def ingest_journals(
         for w in session.scalars(select(ParseWatermark)):
             watermarks[w.journal_file] = (w.last_offset, w.last_line)
 
+    paths = [Path(p) for p in paths]
     for path in paths:
-        key = str(path)
+        # Always use the resolved absolute path as the watermark key so
+        # different cwds produce the same key and don't end up with
+        # duplicate rows for the same physical file.
+        key = _watermark_key(path)
         start_offset, start_line = watermarks.get(key, (0, 0))
         _, prog = ingest_journal(
             path, session, stats, buffer,
@@ -248,6 +252,16 @@ def ingest_journals(
     session.flush()
     _update_watermarks(session, progress)
     return stats
+
+
+def _watermark_key(path: Path) -> str:
+    """Canonical key for `parse_watermarks.journal_file`. We resolve to an
+    absolute path so the same file isn't tracked twice when run from
+    different cwds (`./j.jsonl` vs `/full/path/j.jsonl`)."""
+    try:
+        return str(path.resolve())
+    except (OSError, RuntimeError):
+        return str(path)
 
 
 def _update_watermarks(session: Session, progress: dict[str, _FileProgress]) -> None:

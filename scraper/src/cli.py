@@ -367,6 +367,60 @@ def db_init() -> None:
     typer.echo("db: ready")
 
 
+@db_app.command("prune-watermarks")
+def db_prune_watermarks(
+    missing: bool = typer.Option(
+        True, "--missing/--all",
+        help="--missing (default) drops only watermarks whose journal file no "
+             "longer exists on disk. --all drops every watermark.",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Delete stale parse_watermarks rows.
+
+    By default removes only watermarks whose `journal_file` path doesn't exist
+    anymore (e.g., the prototype's journal you backfilled from once).
+    Use --all to wipe every watermark and force the next parse to re-scan
+    from offset 0 across the board.
+    """
+    from pathlib import Path
+
+    from sqlalchemy import select
+
+    from src.config import load_config
+    from src.db import make_engine, make_session_factory
+    from src.db.models import ParseWatermark
+
+    cfg = load_config()
+    engine = make_engine(cfg)
+    Session = make_session_factory(engine)
+    with Session() as session:
+        rows = session.scalars(select(ParseWatermark)).all()
+        if missing:
+            doomed = [r for r in rows if not Path(r.journal_file).exists()]
+        else:
+            doomed = list(rows)
+
+        if not doomed:
+            typer.echo("nothing to prune.")
+            return
+
+        typer.echo(f"about to delete {len(doomed)} watermark(s):")
+        for r in doomed:
+            typer.echo(f"  - {r.journal_file}  (last_offset={r.last_offset})")
+
+        if not yes:
+            confirm = typer.prompt("proceed? [y/N]", default="n")
+            if confirm.strip().lower() not in ("y", "yes"):
+                typer.echo("aborted.")
+                raise typer.Exit(code=1)
+
+        for r in doomed:
+            session.delete(r)
+        session.commit()
+        typer.echo(f"deleted {len(doomed)} watermark(s).")
+
+
 @app.command()
 def dev(
     no_capture: bool = typer.Option(False, "--no-capture", help="Skip the capture daemon."),
