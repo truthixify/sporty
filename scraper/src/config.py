@@ -40,6 +40,11 @@ class Capture(BaseModel):
     recovery: Recovery = Field(default_factory=Recovery)
     rotation: Rotation = Field(default_factory=Rotation)
     headless: bool = False
+    # Default false: SportyBet's /virtual page serves the WS feed without
+    # auth, so a fresh ephemeral Chromium profile per run is fine and avoids
+    # SingletonLock / crash-marker corruption between runs.
+    # Set true if you ever need bootstrap_login.py state to survive.
+    persistent_profile: bool = False
 
 
 class Database(BaseModel):

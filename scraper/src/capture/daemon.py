@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 from src.capture.browser import (
     discover_iframe_url,
@@ -85,10 +88,25 @@ async def run_capture(
 
     end_reason = "ok"
     exit_code = EXIT_CLEAN
-    prepare_profile_for_launch(cfg.paths.profile_dir)
+
+    # Pick the profile dir. SportyBet's /virtual page works fully anonymously
+    # so the default is an ephemeral tmp dir that gets nuked on shutdown - no
+    # SingletonLock / crash-marker carryover between runs. Set
+    # `capture.persistent_profile: true` in config.yaml to keep using the
+    # configured profile_dir (e.g. if you ran bootstrap_login for some reason
+    # and need that state to stick around).
+    if cfg.capture.persistent_profile:
+        profile_dir = cfg.paths.profile_dir
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        prepare_profile_for_launch(profile_dir)
+        ephemeral_profile_path: Path | None = None
+    else:
+        ephemeral_profile_path = Path(tempfile.mkdtemp(prefix="scraper-chromium-"))
+        profile_dir = ephemeral_profile_path
+
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
-            user_data_dir=str(cfg.paths.profile_dir),
+            user_data_dir=str(profile_dir),
             headless=headless_eff,
             viewport={"width": 1280, "height": 800},
         )
@@ -162,6 +180,8 @@ async def run_capture(
                     frames_out=frames_out,
                     error_count=error_count,
                 )
+                if ephemeral_profile_path is not None:
+                    shutil.rmtree(ephemeral_profile_path, ignore_errors=True)
 
 
 def _record_session(

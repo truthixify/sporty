@@ -8,6 +8,10 @@ capture:
   parent_url: "https://www.sportybet.com/ng/virtual"
   enabled_products: [football, dogs, horses, speedway, motorbikes]
   ignore_resources: [/tickets/findByTime]
+  # /virtual works anonymously; ephemeral profile per run avoids any state
+  # corruption between runs. Flip to true if you ever need bootstrap_login
+  # state to persist (none currently required).
+  persistent_profile: false
   recovery:
     death_401_threshold: 5
     death_window_seconds: 60

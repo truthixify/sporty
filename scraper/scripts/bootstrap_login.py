@@ -2,6 +2,13 @@
 can complete login (CAPTCHA, geo, account password) once. The persistent
 profile is saved under `paths.profile_dir`; subsequent capture runs reuse it.
 
+Note: in current operation **you do not need this**. SportyBet's /virtual
+page serves the WS feed without authentication, so just `scraper capture`
+straight away. This script is kept for the case where Sportybet ever starts
+gating the page behind login. If you do run it, also set
+`capture.persistent_profile: true` in config.yaml so the daemon actually
+uses the profile state you saved.
+
 Usage: `uv run python scripts/bootstrap_login.py`
 """
 

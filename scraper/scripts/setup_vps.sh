@@ -59,7 +59,8 @@ done.
 next steps (manual):
   1) cp $TARGET/scraper/config.example.yaml $TARGET/scraper/config.yaml  # then edit
   2) cp $TARGET/scraper/.env.example $TARGET/scraper/.env                 # then edit
-  3) tunnel a VNC, run scripts/bootstrap_login.py to log in once
+  3) (no login step required - SportyBet /virtual is anonymous;
+      capture.persistent_profile defaults to false)
   4) test capture by hand: sudo -u $USER_NAME bash -c 'cd $TARGET/scraper && uv run scraper capture --duration 120'
   5) enable services:
        systemctl enable --now scraper-api
