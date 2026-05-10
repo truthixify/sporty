@@ -222,6 +222,44 @@ def test_incremental_picks_up_appended_lines(tmp_path: Path) -> None:
     session.close()
 
 
+def test_legacy_relative_path_watermark_is_auto_migrated(tmp_path: Path) -> None:
+    """If the DB has a leftover relative-path watermark for a file we now
+    address by absolute path, the next parse run should drop the alias."""
+    from src.db.models import ParseWatermark
+
+    journal = tmp_path / "j.jsonl"
+    _make_journal(journal)
+    session, _ = _make_session(tmp_path)
+
+    # Seed a stale relative-path watermark for the same file
+    session.add(ParseWatermark(
+        journal_file="some/relative/path/that/aliases.jsonl",  # bogus key, won't resolve
+        last_offset=999, last_line=999, parsed_count=999, last_run_ts=1.0,
+    ))
+    # And a valid alias: the resolved version of the same file via a relative path
+    session.add(ParseWatermark(
+        journal_file=str(journal.relative_to(tmp_path)),  # 'j.jsonl' (relative)
+        last_offset=0, last_line=0, parsed_count=0, last_run_ts=1.0,
+    ))
+    session.commit()
+
+    import os
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        ingest_journals([Path("j.jsonl")], session, incremental=True)
+        session.commit()
+    finally:
+        os.chdir(cwd)
+
+    wms = session.scalars(select(ParseWatermark)).all()
+    keys = sorted(w.journal_file for w in wms)
+    # The aliased relative key 'j.jsonl' should be gone; the bogus one stays.
+    assert "j.jsonl" not in keys
+    assert any(k.endswith("/j.jsonl") and k.startswith("/") for k in keys)
+    session.close()
+
+
 def test_relative_and_absolute_paths_share_a_watermark(tmp_path: Path, monkeypatch) -> None:
     """The same file referenced via different relative paths from different
     cwds must collapse to one watermark row, not duplicate."""

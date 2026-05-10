@@ -267,7 +267,12 @@ def _watermark_key(path: Path) -> str:
 def _update_watermarks(session: Session, progress: dict[str, _FileProgress]) -> None:
     """Persist the latest position for each journal file. `parsed_count` is
     the count from the most recent run, not a lifetime sum, so a backfill
-    overwrites rather than inflating the value."""
+    overwrites rather than inflating the value.
+
+    Also opportunistically deletes any other watermark rows whose
+    `journal_file` resolves to the same physical path as the current key
+    (these are leftovers from when the schema stored relative paths).
+    """
     now = time.time()
     for key, prog in progress.items():
         existing = session.get(ParseWatermark, key)
@@ -284,7 +289,24 @@ def _update_watermarks(session: Session, progress: dict[str, _FileProgress]) -> 
                 parsed_count=prog.parsed_lines,
                 last_run_ts=now,
             ))
+        _drop_aliased_watermarks(session, canonical_key=key)
     session.flush()
+
+
+def _drop_aliased_watermarks(session: Session, *, canonical_key: str) -> None:
+    """Remove ParseWatermark rows whose `journal_file` is a different string
+    but resolves to the same absolute path as `canonical_key`. Lets us auto-
+    migrate the legacy relative-path rows the moment the file is touched."""
+    others = session.scalars(
+        select(ParseWatermark).where(ParseWatermark.journal_file != canonical_key)
+    ).all()
+    for other in others:
+        try:
+            resolved = str(Path(other.journal_file).resolve())
+        except (OSError, RuntimeError):
+            continue
+        if resolved == canonical_key:
+            session.delete(other)
 
 
 def _route(pair: ResponsePair, buf: _Buffer, stats: IngestStats) -> None:

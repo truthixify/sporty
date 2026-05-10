@@ -370,19 +370,33 @@ def db_init() -> None:
 @db_app.command("prune-watermarks")
 def db_prune_watermarks(
     missing: bool = typer.Option(
-        True, "--missing/--all",
-        help="--missing (default) drops only watermarks whose journal file no "
-             "longer exists on disk. --all drops every watermark.",
+        True, "--missing/--no-missing",
+        help="Drop watermarks whose journal file no longer exists. Default on.",
+    ),
+    duplicates: bool = typer.Option(
+        True, "--duplicates/--no-duplicates",
+        help="Drop watermarks that are aliases of another (different string, "
+             "same resolved path). Keeps the absolute-path version. Default on.",
+    ),
+    all_: bool = typer.Option(
+        False, "--all",
+        help="Wipe every watermark and force the next parse to re-scan from "
+             "offset 0 across the board. Overrides --missing/--duplicates.",
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
 ) -> None:
     """Delete stale parse_watermarks rows.
 
-    By default removes only watermarks whose `journal_file` path doesn't exist
-    anymore (e.g., the prototype's journal you backfilled from once).
-    Use --all to wipe every watermark and force the next parse to re-scan
-    from offset 0 across the board.
+    Default action removes:
+    - **Missing**: rows pointing at journal files that no longer exist
+      (e.g., the prototype's journal you backfilled from once).
+    - **Duplicates**: multiple rows for the same physical file (e.g.,
+      `data/captures/x.jsonl` and `/abs/path/data/captures/x.jsonl` from
+      before/after the absolute-path migration). Keeps the absolute one.
+
+    Use --all to wipe everything.
     """
+    from collections import defaultdict
     from pathlib import Path
 
     from sqlalchemy import select
@@ -396,10 +410,43 @@ def db_prune_watermarks(
     Session = make_session_factory(engine)
     with Session() as session:
         rows = session.scalars(select(ParseWatermark)).all()
-        if missing:
-            doomed = [r for r in rows if not Path(r.journal_file).exists()]
-        else:
+        doomed: list[ParseWatermark] = []
+
+        if all_:
             doomed = list(rows)
+        else:
+            if missing:
+                doomed.extend(r for r in rows if not Path(r.journal_file).exists())
+            if duplicates:
+                # Group by resolved absolute path; if a group has more than
+                # one row, keep the one whose journal_file IS the absolute
+                # path (or fall back to the most-recently-run row).
+                by_resolved: dict[str, list[ParseWatermark]] = defaultdict(list)
+                for r in rows:
+                    try:
+                        resolved = str(Path(r.journal_file).resolve())
+                    except (OSError, RuntimeError):
+                        resolved = r.journal_file
+                    by_resolved[resolved].append(r)
+                for resolved, group in by_resolved.items():
+                    if len(group) <= 1:
+                        continue
+                    keep = next((r for r in group if r.journal_file == resolved), None)
+                    if keep is None:
+                        keep = max(group, key=lambda r: r.last_run_ts)
+                    for r in group:
+                        if r is not keep:
+                            doomed.append(r)
+
+        # Dedupe doomed (a row might match both --missing and --duplicates)
+        seen_ids = set()
+        unique_doomed: list[ParseWatermark] = []
+        for r in doomed:
+            rid = id(r)
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                unique_doomed.append(r)
+        doomed = unique_doomed
 
         if not doomed:
             typer.echo("nothing to prune.")
