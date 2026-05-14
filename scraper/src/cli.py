@@ -183,6 +183,66 @@ def status() -> None:
 
 
 @app.command()
+def export(
+    product: Optional[str] = typer.Option(
+        None, "--product",
+        help="Restrict export to one product (football, dogs, horses, speedway, motorbikes, mma).",
+    ),
+    schema: Optional[int] = typer.Option(
+        None, "--schema", help="Restrict to one schema_id.",
+    ),
+    season: Optional[int] = typer.Option(
+        None, "--season", help="Restrict to one season_id (football only).",
+    ),
+    since: Optional[str] = typer.Option(
+        None, "--since", help="Only export events with event_time >= this ISO 8601 timestamp.",
+    ),
+    until: Optional[str] = typer.Option(
+        None, "--until", help="Only export events with event_time <= this ISO 8601 timestamp.",
+    ),
+    output: Path = typer.Option(
+        Path("./exports"), "--output", "-o",
+        help="Output directory. Will be wiped and recreated.",
+    ),
+    bundle: bool = typer.Option(
+        False, "--bundle",
+        help="Zip the result into a single file (output is then output.zip).",
+    ),
+) -> None:
+    """Dump the dataset to a structured directory tree of JSON files.
+
+    For football, each schema gets `schema.json` (description, teams, markets)
+    plus `seasons/<index>/season.json` and one `matchday-NN.json` per matchday
+    (under `<PHASE>/` for tournaments). For race products, each schema gets
+    its events as `races/<YYYY-MM-DD>/race-<e_block_id>.json` with runners,
+    odds, and result. Each schema also gets a `all-events.ndjson` (or
+    `all-races.ndjson`) rollup; each product gets one too.
+
+    Use `--bundle` to get one zipfile instead of a directory tree.
+    """
+    from src.config import load_config
+    from src.db import make_engine, make_session_factory
+    from src.export import run_export
+
+    cfg = load_config()
+    engine = make_engine(cfg)
+    Session = make_session_factory(engine)
+    with Session() as session:
+        stats = run_export(
+            session, output,
+            product=product, schema_id=schema, season_id=season,
+            since=since, until=until, bundle=bundle,
+        )
+
+    typer.echo(
+        f"export: products={stats.products_written} schemas={stats.schemas} "
+        f"seasons={stats.seasons} matchdays={stats.matchdays} races={stats.races} "
+        f"events={stats.events} files_written={stats.files_written} "
+        f"out={stats.output_dir}"
+    )
+
+
+@app.command()
 def alert_test(
     severity: str = typer.Option("info", "--severity", help="info, warning, or critical."),
 ) -> None:

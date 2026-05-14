@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from src.api import deps
-from src.api.routes import db, events, football, health, metrics, races, sessions
+from src.api.routes import db, events, exports, football, health, metrics, races, sessions
 from src.config import Config, load_config
 
 
@@ -103,6 +103,14 @@ _OPENAPI_TAGS = [
             "`winners-by-trap` here is just `corner 1 vs corner 2`."
         ),
     },
+    {
+        "name": "Export",
+        "description": (
+            "Bundle the dataset into downloadable zips. The whole-DB endpoint "
+            "is sized for occasional snapshots; per-schema and per-season "
+            "endpoints are the everyday way to grab a chunk for offline use."
+        ),
+    },
 ]
 
 
@@ -129,4 +137,20 @@ def create_app(config: Config | None = None) -> FastAPI:
     app.include_router(races.make_race_router(product="speedway", tag="Speedway", label="speedway"))
     app.include_router(races.make_race_router(product="motorbikes", tag="Motorbikes", label="motorbike racing"))
     app.include_router(races.make_race_router(product="mma", tag="MMA", label="MMA"))
+    app.include_router(exports.router)
+    # Per-race export endpoints, sharing one handler factory.
+    for prod, label in [
+        ("dogs", "dog racing"),
+        ("horses", "horse racing"),
+        ("speedway", "speedway"),
+        ("motorbikes", "motorbike racing"),
+        ("mma", "MMA"),
+    ]:
+        app.add_api_route(
+            f"/{prod}/schemas/{{schema_id}}/export",
+            exports.make_race_export_route(product=prod, label=label),
+            methods=["GET"],
+            tags=["Export"],
+            summary=f"Export one {label} schema as a zip",
+        )
     return app
