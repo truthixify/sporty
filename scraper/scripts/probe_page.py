@@ -23,11 +23,18 @@ PROFILE = Path("/tmp/probe-profile")
 
 
 async def main() -> int:
+    # Prefer patchright (anti-fingerprint patches built in) so the probe
+    # mirrors what the daemon will actually do.
     try:
-        from playwright.async_api import async_playwright
+        from patchright.async_api import async_playwright
+        print("=== using patchright (with anti-fingerprint patches)")
     except ImportError:
-        print("playwright not installed in this venv")
-        return 2
+        try:
+            from playwright.async_api import async_playwright
+            print("=== using vanilla playwright (patchright not installed)")
+        except ImportError:
+            print("playwright not installed in this venv")
+            return 2
 
     cfg = load_config()
     url = cfg.capture.parent_url

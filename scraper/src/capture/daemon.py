@@ -37,11 +37,19 @@ async def run_capture(
 ) -> int:
     """Run the capture daemon until `duration_s` (0 means forever) or the
     recovery ladder gives up. Returns one of the EXIT_* codes."""
+    # Prefer patchright (a maintained fork of Playwright with built-in
+    # anti-fingerprint patches: navigator.webdriver, canvas/webgl/audio
+    # spoofing, etc.) since SportyBet's reCAPTCHA Enterprise blocks vanilla
+    # headless Chromium. Falls back to plain playwright if patchright isn't
+    # installed.
     try:
-        from playwright.async_api import async_playwright
-    except ImportError as exc:
-        print(f"capture: playwright not installed: {exc}", file=sys.stderr)
-        return EXIT_UNKNOWN
+        from patchright.async_api import async_playwright
+    except ImportError:
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:
+            print(f"capture: playwright not installed: {exc}", file=sys.stderr)
+            return EXIT_UNKNOWN
 
     session_id = new_session_id()
     writer = JournalWriter(captures_dir=cfg.paths.captures_dir, session_id=session_id)
